@@ -71,6 +71,23 @@ def subschemas(node: dict[str, Any]) -> Iterator[tuple[dict[str, Any], int]]:
             yield item, 1
 
 
+def join_uri(base: str, ref: str) -> str:
+    """
+    Resolve ``ref`` against ``base`` with ``urljoin``.
+
+    ``urljoin`` returns a fragment-only ``ref`` (``#...``) unchanged when the scheme of
+    ``base`` is not in ``urllib.parse.uses_relative``, for example ``urn:``. For such
+    a ``ref``, keep ``base`` and replace its fragment instead, as defined in
+    https://tools.ietf.org/html/rfc3986#section-5.2.2.
+    """
+    if ref.startswith('#'):
+        # Only for schemes that urljoin doesn't handle. For the others, keep urljoin's result as it was:
+        # urljoin also normalizes the URI, for example it lowercases the scheme.
+        if urlparse.urlsplit(base).scheme not in urlparse.uses_relative:
+            return urlparse.urldefrag(base)[0] + ref
+    return urlparse.urljoin(base, ref)
+
+
 def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> Any:
     """
     Resolve a remote ``uri``.
@@ -151,7 +168,7 @@ class RefResolver:
         Context manager to handle current scope.
         """
         old_scope = self.resolution_scope
-        self.resolution_scope = urlparse.urljoin(old_scope, scope)
+        self.resolution_scope = join_uri(old_scope, scope)
         try:
             yield
         finally:
@@ -163,7 +180,7 @@ class RefResolver:
         Context manager which resolves a JSON ``ref`` and enters the
         resolution scope of this ref.
         """
-        new_uri = urlparse.urljoin(self.resolution_scope, ref)
+        new_uri = join_uri(self.resolution_scope, ref)
         uri, fragment = urlparse.urldefrag(new_uri)
 
         document_uri = uri or self.base_uri
@@ -183,7 +200,7 @@ class RefResolver:
             with self.in_scope(document_uri):
                 self._ensure_walked(document_uri, schema)
                 if fragment and not fragment.startswith('/'):
-                    plain_name = normalize(urlparse.urljoin(document_uri, '#' + fragment))
+                    plain_name = normalize(join_uri(document_uri, '#' + fragment))
                     if plain_name in self.store:
                         yield self.store[plain_name]
                         return
@@ -225,7 +242,7 @@ class RefResolver:
         elif '$ref' in node and isinstance(node['$ref'], str):
             if rewrite_refs:
                 ref = node['$ref']
-                node['$ref'] = urlparse.urljoin(self.resolution_scope, ref)
+                node['$ref'] = join_uri(self.resolution_scope, ref)
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
             with self.in_scope(get_id(node)):
                 self.store[normalize(self.resolution_scope)] = node
