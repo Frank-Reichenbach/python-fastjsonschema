@@ -1,6 +1,8 @@
+from urllib.parse import quote
+
 import pytest
 
-from fastjsonschema import JsonSchemaValueException, compile
+from fastjsonschema import JsonSchemaException, JsonSchemaValueException, compile
 
 
 definition = {
@@ -167,3 +169,59 @@ def test_relative_ref_in_remote_schema_is_resolved_once():
     )
 
     assert validator({'value': 'ok'}) == {'value': 'ok'}
+
+
+def definition_pointer(key):
+    return '#/definitions/' + quote(key.replace('~', '~0').replace('/', '~1'))
+
+
+@pytest.mark.parametrize('integer_key, string_key', [
+    ('Address', 'address'),
+    ('user-id', 'user_id'),
+    ('a/b', 'a_b'),
+    ('größe', 'grüße'),
+    ('id', 'id_'),
+])
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_refs_to_definitions_with_same_function_name(integer_key, string_key, fast_fail):
+    validator = compile({
+        'definitions': {integer_key: {'type': 'integer'}, string_key: {'type': 'string'}},
+        'properties': {
+            'a': {'$ref': definition_pointer(integer_key)},
+            'b': {'$ref': definition_pointer(string_key)},
+        },
+    }, fast_fail=fast_fail)
+
+    assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
+    with pytest.raises(JsonSchemaException):
+        validator({'a': 'x'})
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 1})
+
+
+def test_refs_to_ids_with_same_function_name():
+    validator = compile({
+        'definitions': {
+            'i': {'$id': 'http://example.com/user-id.json', 'type': 'integer'},
+            's': {'$id': 'http://example.com/user_id.json', 'type': 'string'},
+        },
+        'properties': {
+            'a': {'$ref': 'http://example.com/user-id.json'},
+            'b': {'$ref': 'http://example.com/user_id.json'},
+        },
+    })
+
+    assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 1})
+
+
+def test_ref_changed_by_normalization_and_its_normalized_form_use_one_function():
+    validator = compile({
+        'definitions': {'ab': {'type': 'integer'}},
+        'properties': {'x': {'$ref': '?#/definitions/ab'}, 'y': {'$ref': '#/definitions/ab'}},
+    })
+
+    assert validator({'x': 1, 'y': 1}) == {'x': 1, 'y': 1}
+    with pytest.raises(JsonSchemaException):
+        validator({'x': 'a'})
