@@ -23,7 +23,6 @@ def pytest_generate_tests(metafunc):
             # TODO: fix ref
             'ref.json',
             'refRemote.json',
-            'id.json',
             'cross-draft.json',
 
             # TODO: new stuff, not implemented yet
