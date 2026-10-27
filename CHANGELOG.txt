@@ -7,6 +7,7 @@
 * Added `message` to `JsonSchemaValuesException` joining messages of all collected errors
 * Fixed the `date-time` format accepting months, days and hours out of range (such as `2020-19-39T29:00:00Z`) and rejecting a leap second (`23:59:60Z`)
 * Fixed the `time` format accepting hours, minutes, seconds and offsets out of range (such as `29:99:99`)
+* Fixed two refs whose targets differ only in case or punctuation (such as `#/definitions/user-id` and `#/definitions/user_id`) calling the same generated function, and a `NameError` during validation when two refs to the same URI got different function names (such as `?#/definitions/ab` and `#/definitions/ab`)
 
 === 2.22.2 (2026-08-15)
 
