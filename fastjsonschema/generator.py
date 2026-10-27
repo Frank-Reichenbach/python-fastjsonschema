@@ -67,13 +67,17 @@ class CodeGenerator:
         self._needed_validation_functions = {}
         # validation function names that are already done
         self._validation_functions_done = set()
+        # map schema URIs to their validation function names, unique per URI
+        self._validation_function_names = {}
+        # the names in `self._validation_function_names`
+        self._taken_validation_function_names = set()
 
         if resolver is None:
             resolver = RefResolver.from_schema(definition, store={})
         self._resolver = resolver
 
         # add main function to `self._needed_validation_functions`
-        self._needed_validation_functions[self._resolver.get_uri()] = self._resolver.get_scope_name()
+        self._needed_validation_functions[self._resolver.get_uri()] = self._validation_function_name()
 
         self._json_keywords_to_function = OrderedDict()
 
@@ -210,6 +214,24 @@ class CodeGenerator:
                 count += 1
         return count
 
+    def _validation_function_name(self):
+        """
+        Name of the validation function for the current URI. Each URI gets one name,
+        and different URIs get different names.
+        """
+        uri = self._resolver.get_uri()
+        if uri not in self._validation_function_names:
+            base = name = self._resolver.get_scope_name()
+            index = 2
+            # get_scope_name strips trailing "_", so a suffixed name is never the unsuffixed name of
+            # another URI: a URI whose name doesn't collide keeps it, whichever URI comes first.
+            while name in self._taken_validation_function_names:
+                name = '{}_{}_'.format(base, index)
+                index += 1
+            self._validation_function_names[uri] = name
+            self._taken_validation_function_names.add(name)
+        return self._validation_function_names[uri]
+
     def generate_ref(self):
         """
         Ref can be link to remote or local definition.
@@ -225,7 +247,7 @@ class CodeGenerator:
             }
         """
         with self._resolver.in_scope(self._definition['$ref']):
-            name = self._resolver.get_scope_name()
+            name = self._validation_function_name()
             uri = self._resolver.get_uri()
             if uri not in self._validation_functions_done:
                 self._needed_validation_functions[uri] = name

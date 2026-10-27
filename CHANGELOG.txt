@@ -1,6 +1,7 @@
 === UNRELEASED
 
 * Fixed `$` in `patternProperties` matching before a trailing newline, which also made a `pattern` with the same regex accept a trailing newline
+* Fixed two refs whose targets differ only in case or punctuation (such as `#/definitions/user-id` and `#/definitions/user_id`) calling the same generated function, and a `NameError` during validation when two refs to the same URI got different function names (such as `?#/definitions/ab` and `#/definitions/ab`). This also fixes `compile()` returning the validator of a referenced schema instead of the whole schema when both got the same function name (such as for `#/-`)
 
 === 2.22.3 (2026-11-01)
 
