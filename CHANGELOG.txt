@@ -12,6 +12,7 @@
 * Fixed refs starting with `#` (`#`, `#/definitions/...`, plain names like `#foo`) inside a subschema whose `$id` has a scheme such as `urn:` resolving against the root schema instead of that subschema, unlike with an `http` `$id`
 * Changed such a ref whose target exists only in the root schema to raise `JsonSchemaDefinitionException` at compile time, as with an `http` `$id`
 * Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
+* Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
 
 === 2.22.2 (2026-08-15)
 

@@ -408,3 +408,72 @@ def test_plain_name_ref_under_urn_id_next_to_similar_urn(fast_fail):
     assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
     with pytest.raises(JsonSchemaException):
         validator({'b': 1})
+
+
+def node_with_local_x(v, id_key='$id'):
+    return {
+        id_key: 'http://example.com/node.json',
+        'definitions': {'x': {'type': 'integer'}},
+        'properties': {'v': v},
+    }
+
+
+@pytest.mark.parametrize('schema_version, id_key', [
+    ('http://json-schema.org/draft-04/schema#', 'id'),
+    ('http://json-schema.org/draft-07/schema#', '$id'),
+])
+@pytest.mark.parametrize('v, valid, invalid', [
+    ({'allOf': [{'$ref': '#/definitions/x'}]}, 1, 'a'),
+    ({'anyOf': [{'$ref': '#/definitions/x'}]}, 1, 'a'),
+    ({'oneOf': [{'$ref': '#/definitions/x'}]}, 1, 'a'),
+    ({'items': [{'$ref': '#/definitions/x'}]}, [1], ['a']),
+    ({'allOf': [{'properties': {'w': {'$ref': '#/definitions/x'}}}]}, {'w': 1}, {'w': 'a'}),
+])
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_ref_in_schema_array_uses_id_of_its_subschema(schema_version, id_key, v, valid, invalid, fast_fail):
+    validator = compile({
+        '$schema': schema_version,
+        'definitions': {'x': {'type': 'string'}},
+        'properties': {'p': node_with_local_x(v, id_key)},
+    }, fast_fail=fast_fail)
+
+    assert validator({'p': {'v': valid}}) == {'p': {'v': valid}}
+    with pytest.raises(JsonSchemaException):
+        validator({'p': {'v': invalid}})
+
+
+def test_id_in_schema_array_is_registered():
+    def handler(uri):
+        raise AssertionError('handler called with ' + uri)
+
+    validator = compile({
+        '$id': 'http://example.com/root.json',
+        'definitions': {'l': {'anyOf': [{'$id': 'item.json', 'type': 'integer'}, {'type': 'null'}]}},
+        'properties': {'p': {'$ref': 'item.json'}},
+    }, handlers={'http': handler})
+
+    assert validator({'p': 1}) == {'p': 1}
+    with pytest.raises(JsonSchemaException):
+        validator({'p': 'a'})
+
+
+def test_plain_name_id_in_schema_array_is_registered():
+    validator = compile({
+        'definitions': {'l': {'allOf': [{'$id': '#int', 'type': 'integer'}]}},
+        'properties': {'p': {'$ref': '#int'}},
+    })
+
+    assert validator({'p': 1}) == {'p': 1}
+    with pytest.raises(JsonSchemaException):
+        validator({'p': 'a'})
+
+
+def test_schema_array_inside_data_keyword_is_data():
+    value = {'allOf': [{'$ref': '#/definitions/x'}]}
+    validator = compile({
+        '$id': 'http://example.com/root.json',
+        'definitions': {'x': {'type': 'string'}},
+        'properties': {'p': {'const': copy.deepcopy(value)}},
+    })
+
+    assert validator({'p': copy.deepcopy(value)}) == {'p': value}
