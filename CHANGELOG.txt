@@ -9,6 +9,9 @@
 * Fixed the `time` format accepting hours, minutes, seconds and offsets out of range (such as `29:99:99`)
 * Fixed two refs whose targets differ only in case or punctuation (such as `#/definitions/user-id` and `#/definitions/user_id`) calling the same generated function, and a `NameError` during validation when two refs to the same URI got different function names (such as `?#/definitions/ab` and `#/definitions/ab`)
 * Fixed `$ref` and `$id` inside the values of `const`, `enum`, `default` and `examples` being treated as part of the schema, which could make `compile()` fail, change those values or replace another subschema with the same `$id`
+* Fixed refs starting with `#` (`#`, `#/definitions/...`, plain names like `#foo`) inside a subschema whose `$id` has a scheme such as `urn:` resolving against the root schema instead of that subschema, unlike with an `http` `$id`
+* Changed such a ref whose target exists only in the root schema to raise `JsonSchemaDefinitionException` at compile time, as with an `http` `$id`
+* Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
 
 === 2.22.2 (2026-08-15)
 

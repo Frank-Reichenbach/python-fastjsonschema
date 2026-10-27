@@ -3,7 +3,7 @@ from urllib.parse import quote
 
 import pytest
 
-from fastjsonschema import JsonSchemaException, JsonSchemaValueException, compile
+from fastjsonschema import JsonSchemaDefinitionException, JsonSchemaException, JsonSchemaValueException, compile
 
 
 definition = {
@@ -291,3 +291,120 @@ def test_property_named_like_data_keyword_is_schema(name):
     assert validator({'p': {name: 1}}) == {'p': {name: 1}}
     with pytest.raises(JsonSchemaException):
         validator({'p': {name: 'a'}})
+
+
+URN_NODE = {
+    '$id': 'urn:example:node',
+    'type': 'object',
+    'properties': {
+        'all': {'type': 'array', 'items': {'$ref': '#'}},
+        'eq': {'type': 'array', 'maxItems': 2},
+    },
+    'additionalProperties': False,
+}
+
+
+@pytest.mark.parametrize('schema, handlers', [
+    ({'properties': {'p': {'$ref': 'urn:example:node'}}, 'definitions': {'node': URN_NODE}}, {}),
+    ({'properties': {'p': {'$ref': 'urn:example:node'}}}, {'urn': lambda uri: copy.deepcopy(URN_NODE)}),
+    ({'properties': {'p': URN_NODE}}, {}),
+])
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_local_ref_in_subschema_with_urn_id(schema, handlers, fast_fail):
+    # Copy, because the test cases share URN_NODE and compile() rewrites $ref values in place.
+    validator = compile(copy.deepcopy(schema), handlers=handlers, fast_fail=fast_fail)
+
+    assert validator({'p': {'all': [{'eq': [1, 2]}]}}) == {'p': {'all': [{'eq': [1, 2]}]}}
+    with pytest.raises(JsonSchemaException) as exc:
+        validator({'p': {'all': [{'eq': [1, 2, 3]}]}})
+    errors = [exc.value] if fast_fail else exc.value.errors
+    assert errors[0].name == 'data.p.all[0].eq'
+
+
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_json_pointer_ref_in_subschema_with_urn_id(fast_fail):
+    validator = compile({
+        'definitions': {'x': {'type': 'string'}},
+        'properties': {'p': {
+            '$id': 'urn:example:item',
+            'definitions': {'x': {'type': 'integer'}},
+            'properties': {'v': {'$ref': '#/definitions/x'}},
+        }},
+    }, fast_fail=fast_fail)
+
+    assert validator({'p': {'v': 1}}) == {'p': {'v': 1}}
+    with pytest.raises(JsonSchemaException):
+        validator({'p': {'v': 'a'}})
+
+
+def test_json_pointer_ref_in_subschema_with_urn_id_does_not_fall_back_to_root():
+    with pytest.raises(JsonSchemaDefinitionException):
+        compile({
+            'definitions': {'x': {'type': 'string'}},
+            'properties': {'p': {
+                '$id': 'urn:example:item',
+                'properties': {'v': {'$ref': '#/definitions/x'}},
+            }},
+        })
+
+
+def test_local_ref_in_subschema_with_http_id_is_rewritten_by_urljoin():
+    schema = {
+        'definitions': {'x': {'type': 'string'}},
+        'properties': {'p': {
+            '$id': 'HTTP://example.com/item.json',
+            'definitions': {'x': {'type': 'integer'}},
+            'properties': {'v': {'$ref': '#/definitions/x'}},
+        }},
+    }
+    compile(schema)
+
+    # urljoin lowercases the scheme.
+    assert schema['properties']['p']['properties']['v']['$ref'] == 'http://example.com/item.json#/definitions/x'
+
+
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_plain_name_id_in_subschema_with_urn_id(fast_fail):
+    validator = compile({
+        'definitions': {
+            's': {'$id': '#foo', 'type': 'string'},
+            'item': {
+                '$id': 'urn:example:item',
+                'definitions': {'i': {'$id': '#foo', 'type': 'integer'}},
+                'properties': {'v': {'$ref': '#foo'}},
+            },
+        },
+        'properties': {'r': {'$ref': '#foo'}, 'p': {'$ref': 'urn:example:item'}},
+    }, fast_fail=fast_fail)
+
+    assert validator({'r': 'a', 'p': {'v': 1}}) == {'r': 'a', 'p': {'v': 1}}
+    with pytest.raises(JsonSchemaException):
+        validator({'r': 1})
+    with pytest.raises(JsonSchemaException):
+        validator({'p': {'v': 'a'}})
+
+
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_ref_object_in_data_keyword_under_urn_id_is_data(fast_fail):
+    validator = compile({
+        '$id': 'urn:example:root',
+        'properties': {'c': {'const': {'$ref': '#'}}, 'd': {'default': {'$ref': '#'}}},
+    }, fast_fail=fast_fail)
+
+    assert validator({'c': {'$ref': '#'}}) == {'c': {'$ref': '#'}, 'd': {'$ref': '#'}}
+
+
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_plain_name_ref_under_urn_id_next_to_similar_urn(fast_fail):
+    validator = compile({
+        '$id': 'urn:example:root',
+        'definitions': {
+            'a': {'$id': '#foo', 'type': 'integer'},
+            'b': {'$id': 'urn:example:root:foo', 'type': 'string'},
+        },
+        'properties': {'a': {'$ref': '#foo'}, 'b': {'$ref': 'urn:example:root:foo'}},
+    }, fast_fail=fast_fail)
+
+    assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 1})
