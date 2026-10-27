@@ -712,3 +712,115 @@ def test_invalid_uri_in_unknown_keyword_of_handler_loaded_schema():
 def test_used_ref_that_is_not_a_valid_uri_fails():
     with pytest.raises(ValueError):
         compile({'properties': {'p': {'$ref': 'http://[bad'}}})
+
+
+def node_with_own_y(id_key='$id', in_array=False):
+    ref = {'$ref': '#/definitions/y'}
+    return {
+        id_key: 'http://example.com/node.json',
+        'definitions': {'y': {'type': 'integer'}},
+        'properties': {'b': {'allOf': [ref]} if in_array else ref},
+    }
+
+
+@pytest.mark.parametrize('schema_version, id_key', [
+    ('http://json-schema.org/draft-04/schema#', 'id'),
+    ('http://json-schema.org/draft-07/schema#', '$id'),
+    (None, '$id'),
+])
+@pytest.mark.parametrize('definitions_key', ['definitions', '$defs'])
+@pytest.mark.parametrize('in_array', [False, True])
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_ref_into_definitions_next_to_ref_uses_id_of_target(schema_version, id_key, definitions_key, in_array, fast_fail):
+    schema = {'$ref': '#/{}/a'.format(definitions_key), 'definitions': {'y': {'type': 'string'}}}
+    schema.setdefault(definitions_key, {})['a'] = node_with_own_y(id_key, in_array)
+    if schema_version:
+        schema['$schema'] = schema_version
+    validator = compile(schema, fast_fail=fast_fail)
+
+    assert validator({'b': 1}) == {'b': 1}
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 'x'})
+
+
+def test_id_in_definitions_next_to_ref_is_registered():
+    validator = compile({
+        '$ref': 'http://example.com/node.json',
+        'definitions': {'a': node_with_own_y(), 'y': {'type': 'string'}},
+    }, handlers={'http': no_handler})
+
+    assert validator({'b': 1}) == {'b': 1}
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 'x'})
+
+
+def test_ref_into_definitions_next_to_ref_in_handler_loaded_schema():
+    doc = {'$ref': '#/definitions/a', 'definitions': {'a': node_with_own_y(), 'y': {'type': 'string'}}}
+    validator = compile({'$ref': 'http://example.com/doc.json'}, handlers={'http': lambda uri: copy.deepcopy(doc)})
+
+    assert validator({'b': 1}) == {'b': 1}
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 'x'})
+
+
+@pytest.mark.parametrize('keyword', ['x-example', 'not'])
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_id_in_other_keyword_next_to_ref_is_ignored(keyword, fast_fail):
+    loaded = []
+
+    def handler(uri):
+        loaded.append(uri)
+        return {'type': 'integer'}
+
+    validator = compile({
+        '$ref': 'http://example.com/target',
+        keyword: {'$id': 'http://example.com/target', 'type': 'string'},
+    }, handlers={'http': handler}, fast_fail=fast_fail)
+
+    assert validator(1) == 1
+    with pytest.raises(JsonSchemaException):
+        validator('x')
+    assert loaded == ['http://example.com/target']
+
+
+UNKNOWN_KEYWORD_DEFINITIONS = {'a': {'x-example': {'$id': 'http://example.com/target', 'type': 'string'}}}
+
+
+@pytest.mark.parametrize('schema, valid, invalid', [
+    ({'definitions': UNKNOWN_KEYWORD_DEFINITIONS, 'properties': {'p': {'$ref': 'http://example.com/target'}}},
+     {'p': 'x'}, {'p': 1}),
+    ({'$ref': 'http://example.com/target', 'definitions': UNKNOWN_KEYWORD_DEFINITIONS}, 'x', 1),
+])
+def test_id_in_unknown_keyword_inside_definitions_is_registered(schema, valid, invalid):
+    # walk() treats the values of unknown keywords as schemas, so this $id replaces the schema
+    # a handler would load. Definitions next to a $ref are no exception.
+    validator = compile(copy.deepcopy(schema), handlers={'http': no_handler})
+
+    assert validator(valid) == valid
+    with pytest.raises(JsonSchemaException):
+        validator(invalid)
+
+
+def test_data_keyword_next_to_ref_is_data():
+    schema = {
+        '$id': 'http://example.com/root',
+        '$ref': '#/definitions/a',
+        'definitions': {'a': {'type': 'object'}},
+        'default': {'$ref': 'child'},
+    }
+    compile(schema)
+
+    assert schema['default'] == {'$ref': 'child'}
+
+
+def test_id_next_to_ref_is_ignored():
+    validator = compile({
+        '$schema': 'http://json-schema.org/draft-07/schema#',
+        '$id': 'http://example.com/root.json',
+        'definitions': {'y': {'type': 'string'}},
+        'properties': {'b': {'$id': 'http://example.com/other.json', '$ref': '#/definitions/y'}},
+    })
+
+    assert validator({'b': 'x'}) == {'b': 'x'}
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 1})
