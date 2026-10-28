@@ -16,6 +16,7 @@
 * Fixed a relative `$id` with a directory, such as `schemas/item.json`, being applied more than once, so that refs below it resolved to `schemas/schemas/item.json`
 * Fixed refs in a schema loaded through `handlers` ignoring the `$id`s in it when `RefResolver` runs with `cache=False` and the schema is loaded a second time
 * Fixed `compile()` failing with `ValueError` for a `$ref` that isn't a valid URI inside the value of an unknown keyword, such as `{"x-note": {"$ref": "http://[bad"}}`, under an absolute `$id`
+* Fixed the `$id` of a schema inside `definitions` or `$defs` next to a `$ref`, such as `{"$ref": "#/definitions/a", "definitions": {"a": {"$id": ...}}}`, being ignored, so that the refs inside that schema resolved against the outer base URI and a `$ref` to that `$id` was loaded through a handler
 
 === 2.22.2 (2026-08-15)
 

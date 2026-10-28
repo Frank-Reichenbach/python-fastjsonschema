@@ -263,6 +263,12 @@ class RefResolver:
             with contextlib.suppress(ValueError):
                 node['$ref'] = join_uri(self.resolution_scope, node['$ref'])
                 self._resolved_refs.add(id(node))
+            # The other keywords next to a $ref are ignored, but another $ref can point into the
+            # definitions there, so the $ids and $refs in those schemas still count. Below them,
+            # schemas are walked as everywhere else, unknown keywords included.
+            definitions = {key: node[key] for key in ('$defs', 'definitions') if key in node}
+            for sub, levels in subschemas(definitions):
+                self.walk(sub, depth + levels)
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
             with self.in_scope(get_id(node), resolved=id_applied):
                 self.store[normalize(self.resolution_scope)] = node
