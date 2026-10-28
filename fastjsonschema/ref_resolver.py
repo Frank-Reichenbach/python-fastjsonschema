@@ -118,6 +118,7 @@ def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> An
     return result
 
 
+# pylint: disable=too-many-instance-attributes
 class RefResolver:
     """
     Resolve JSON References.
@@ -131,11 +132,15 @@ class RefResolver:
         store: dict[str, Any] = {},
         cache: bool = True,
         handlers: Mapping[str, Callable[[str], Any]] = {},
+        *,
+        base_uri_is_id: bool = False,
     ) -> None:
         """
         `base_uri` is URI of the referring document from the `schema`.
         `store` is an dictionary that will be used to cache the fetched schemas
         (if `cache=True`).
+        `base_uri_is_id` says that `base_uri` is already the `$id` of the `schema`,
+        as `from_schema` sets it, so that the `$id` isn't applied to it again.
 
         Please notice that you can have caching problems when compiling schemas
         with colliding `$ref`. To force overwriting use `cache=False` or
@@ -148,7 +153,8 @@ class RefResolver:
         self.cache = cache
         self.handlers = handlers
         self._walked_uris: set[str] = set()
-        self.walk(schema)
+        self._resolved_refs: set[int] = set()
+        self.walk(schema, id_applied=base_uri_is_id)
         self._walked_uris.add(normalize(base_uri) if base_uri else '')
 
     @classmethod
@@ -165,28 +171,29 @@ class RefResolver:
             get_id(schema) if isinstance(schema, dict) else '',
             schema,
             handlers=handlers,
+            base_uri_is_id=True,
             **kwargs
         )
 
     @contextlib.contextmanager
-    def in_scope(self, scope: str) -> Iterator[None]:
+    def in_scope(self, scope: str, resolved: bool = False) -> Iterator[None]:
         """
-        Context manager to handle current scope.
+        Context manager to handle current scope. A ``resolved`` scope is used as it is.
         """
         old_scope = self.resolution_scope
-        self.resolution_scope = join_uri(old_scope, scope)
+        self.resolution_scope = scope if resolved else join_uri(old_scope, scope)
         try:
             yield
         finally:
             self.resolution_scope = old_scope
 
     @contextlib.contextmanager
-    def resolving(self, ref: str) -> Iterator[Any]:
+    def resolving(self, ref: str, resolved: bool = False) -> Iterator[Any]:
         """
         Context manager which resolves a JSON ``ref`` and enters the
-        resolution scope of this ref.
+        resolution scope of this ref. A ``resolved`` ref is used as it is.
         """
-        new_uri = join_uri(self.resolution_scope, ref)
+        new_uri = ref if resolved else join_uri(self.resolution_scope, ref)
         uri, fragment = urlparse.urldefrag(new_uri)
 
         document_uri = uri or self.base_uri
@@ -203,7 +210,7 @@ class RefResolver:
         old_base_uri, old_schema = self.base_uri, self.schema
         self.base_uri, self.schema = document_uri, schema
         try:
-            with self.in_scope(document_uri):
+            with self.in_scope(document_uri, resolved=True):
                 self._ensure_walked(document_uri, schema)
                 if fragment and not fragment.startswith('/'):
                     plain_name = normalize(join_uri(document_uri, '#' + fragment))
@@ -222,6 +229,12 @@ class RefResolver:
         self.walk(schema, rewrite_refs=False)
         self._walked_uris.add(normalized)
 
+    def is_resolved(self, node: dict[str, Any]) -> bool:
+        """
+        Whether ``walk`` already resolved the ``$ref`` of ``node``.
+        """
+        return id(node) in self._resolved_refs
+
     def get_uri(self) -> str:
         return normalize(self.resolution_scope)
 
@@ -234,9 +247,12 @@ class RefResolver:
         name = name.lower().rstrip('_')
         return name
 
-    def walk(self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True) -> None:
+    def walk(
+        self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True, id_applied: bool = False,
+    ) -> None:
         """
-        Walk thru schema and dereferencing ``id`` and ``$ref`` instances
+        Walk thru schema and dereferencing ``id`` and ``$ref`` instances.
+        ``id_applied`` says that the ``$id`` of ``node`` is already the current scope.
         """
         if depth >= MAX_SCHEMA_WALK_DEPTH:
             raise JsonSchemaDefinitionException(
@@ -249,9 +265,11 @@ class RefResolver:
             if rewrite_refs:
                 ref = node['$ref']
                 node['$ref'] = join_uri(self.resolution_scope, ref)
+                self._resolved_refs.add(id(node))
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
-            with self.in_scope(get_id(node)):
+            with self.in_scope(get_id(node), resolved=id_applied):
                 self.store[normalize(self.resolution_scope)] = node
+                self._walked_uris.add(normalize(self.resolution_scope))
                 for sub, levels in subschemas(node):
                     self.walk(sub, depth + levels, rewrite_refs)
         else:

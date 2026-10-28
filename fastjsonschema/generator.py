@@ -153,7 +153,7 @@ class CodeGenerator:
         """
         self._validation_functions_done.add(uri)
         self.l('')
-        with self._resolver.resolving(uri) as definition:
+        with self._resolver.resolving(uri, resolved=True) as definition:
             with self.l('def {}(data, custom_formats={{}}, name_prefix=None):', name):
                 if not self._fast_fail:
                     self.l('errors = []')
@@ -243,7 +243,8 @@ class CodeGenerator:
                 }
             }
         """
-        with self._resolver.in_scope(self._definition['$ref']):
+        resolved = self._resolver.is_resolved(self._definition)
+        with self._resolver.in_scope(self._definition['$ref'], resolved=resolved):
             name = self._validation_function_name()
             uri = self._resolver.get_uri()
             if uri not in self._validation_functions_done:
@@ -348,7 +349,8 @@ class CodeGenerator:
         if not isinstance(definition, dict):
             return definition
         if "$ref" in definition and isinstance(definition["$ref"], str):
-            with self._resolver.resolving(definition["$ref"]) as schema:
+            resolved = self._resolver.is_resolved(definition)
+            with self._resolver.resolving(definition["$ref"], resolved=resolved) as schema:
                 return schema
         return {
             k: v if k in DATA_KEYWORDS else (
