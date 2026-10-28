@@ -152,10 +152,11 @@ class RefResolver:
         self.store = store
         self.cache = cache
         self.handlers = handlers
-        self._walked_uris: set[str] = set()
+        # The schema objects walked so far, by id(). Holding them also keeps their ids,
+        # and those in _resolved_refs, from being reused while the resolver exists.
+        self._walked: dict[int, Any] = {id(schema): schema}
         self._resolved_refs: set[int] = set()
         self.walk(schema, id_applied=base_uri_is_id)
-        self._walked_uris.add(normalize(base_uri) if base_uri else '')
 
     @classmethod
     def from_schema(
@@ -211,7 +212,7 @@ class RefResolver:
         self.base_uri, self.schema = document_uri, schema
         try:
             with self.in_scope(document_uri, resolved=True):
-                self._ensure_walked(document_uri, schema)
+                self._ensure_walked(schema)
                 if fragment and not fragment.startswith('/'):
                     plain_name = normalize(join_uri(document_uri, '#' + fragment))
                     if plain_name in self.store:
@@ -222,12 +223,10 @@ class RefResolver:
         finally:
             self.base_uri, self.schema = old_base_uri, old_schema
 
-    def _ensure_walked(self, uri: str, schema: Any) -> None:
-        normalized = normalize(uri) if uri else ''
-        if normalized in self._walked_uris:
-            return
-        self.walk(schema, rewrite_refs=False)
-        self._walked_uris.add(normalized)
+    def _ensure_walked(self, schema: Any) -> None:
+        if id(schema) not in self._walked:
+            self._walked[id(schema)] = schema
+            self.walk(schema)
 
     def is_resolved(self, node: dict[str, Any]) -> bool:
         """
@@ -247,9 +246,7 @@ class RefResolver:
         name = name.lower().rstrip('_')
         return name
 
-    def walk(
-        self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True, id_applied: bool = False,
-    ) -> None:
+    def walk(self, node: dict[str, Any] | bool, depth: int = 0, id_applied: bool = False) -> None:
         """
         Walk thru schema and dereferencing ``id`` and ``$ref`` instances.
         ``id_applied`` says that the ``$id`` of ``node`` is already the current scope.
@@ -262,16 +259,17 @@ class RefResolver:
         if isinstance(node, bool):
             pass
         elif '$ref' in node and isinstance(node['$ref'], str):
-            if rewrite_refs:
-                ref = node['$ref']
-                node['$ref'] = join_uri(self.resolution_scope, ref)
+            # A $ref that isn't a valid URI is left as it is. If it is used, the generator reports it.
+            with contextlib.suppress(ValueError):
+                node['$ref'] = join_uri(self.resolution_scope, node['$ref'])
                 self._resolved_refs.add(id(node))
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
             with self.in_scope(get_id(node), resolved=id_applied):
                 self.store[normalize(self.resolution_scope)] = node
-                self._walked_uris.add(normalize(self.resolution_scope))
+                # A $ref to this $id resolves to this node, which must not be walked again.
+                self._walked[id(node)] = node
                 for sub, levels in subschemas(node):
-                    self.walk(sub, depth + levels, rewrite_refs)
+                    self.walk(sub, depth + levels)
         else:
             for sub, levels in subschemas(node):
-                self.walk(sub, depth + levels, rewrite_refs)
+                self.walk(sub, depth + levels)

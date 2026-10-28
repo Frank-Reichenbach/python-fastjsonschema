@@ -14,6 +14,8 @@
 * Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
 * Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
 * Fixed a relative `$id` with a directory, such as `schemas/item.json`, being applied more than once, so that refs below it resolved to `schemas/schemas/item.json`
+* Fixed refs in a schema loaded through `handlers` ignoring the `$id`s in it when `RefResolver` runs with `cache=False` and the schema is loaded a second time
+* Fixed `compile()` failing with `ValueError` for a `$ref` that isn't a valid URI inside the value of an unknown keyword, such as `{"x-note": {"$ref": "http://[bad"}}`, under an absolute `$id`
 
 === 2.22.2 (2026-08-15)
 
