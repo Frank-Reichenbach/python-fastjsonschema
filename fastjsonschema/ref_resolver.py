@@ -21,6 +21,8 @@ from .exceptions import JsonSchemaDefinitionException
 
 # keywords whose values are data, not schemas
 DATA_KEYWORDS = ('const', 'default', 'enum', 'examples')
+# keywords whose values are arrays of schemas
+SCHEMA_ARRAYS = ('allOf', 'anyOf', 'oneOf', 'items')
 # keywords whose values map names to schemas
 SCHEMA_MAPS = ('$defs', 'definitions', 'dependencies', 'dependentSchemas', 'patternProperties', 'properties')
 MAX_SCHEMA_WALK_DEPTH = min(500, sys.getrecursionlimit() // 2)
@@ -61,13 +63,17 @@ def subschemas(node: dict[str, Any]) -> Iterator[tuple[dict[str, Any], int]]:
     Yield the subschemas of ``node`` that are objects, with how many levels below ``node`` they are.
     """
     for key, item in node.items():
-        if key in DATA_KEYWORDS or not isinstance(item, dict):
+        if key in DATA_KEYWORDS:
             continue
-        if key in SCHEMA_MAPS:
+        if key in SCHEMA_ARRAYS and isinstance(item, list):
+            for sub in item:
+                if isinstance(sub, dict):
+                    yield sub, 2
+        elif key in SCHEMA_MAPS and isinstance(item, dict):
             for sub in item.values():
                 if isinstance(sub, dict):
                     yield sub, 2
-        else:
+        elif isinstance(item, dict):
             yield item, 1
 
 
