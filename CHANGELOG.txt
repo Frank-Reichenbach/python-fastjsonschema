@@ -9,6 +9,9 @@
 * Fixed `compile()` and `compile_to_code()` rewriting the `$ref` values of the schema in place, so that compiling an object again under another `$id`, or as part of another schema, used the base URI of the first compilation. A `$ref` inside the `definition` of a `JsonSchemaValueException` now shows the value as written in the schema
 * Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
 * Fixed a relative `$id` with a directory, such as `schemas/item.json`, being applied more than once, so that refs below it resolved to `schemas/schemas/item.json`
+* Fixed refs in a schema loaded through `handlers` ignoring the `$id` of the subschema they are in, and the `$id` of that schema if it is relative (regression in 2.22.3)
+* Fixed refs in a schema loaded through `handlers` ignoring the `$id`s in it when `RefResolver` runs with `cache=False` and the schema is loaded a second time
+* Fixed `compile()` failing with `ValueError` for a `$ref` that isn't a valid URI inside the value of an unknown keyword, such as `{"x-note": {"$ref": "http://[bad"}}`, in a schema with an `$id`
 
 === 2.22.3 (2026-11-01)
 
