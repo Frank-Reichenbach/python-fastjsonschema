@@ -33,6 +33,8 @@ class CodeGenerator:
     """
 
     INDENT = 4  # spaces
+    # Whether an $id next to a $ref counts, as in 2019-09; earlier drafts ignore it.
+    ID_NEXT_TO_REF = False
 
     def __init__(self, definition, resolver=None, detailed_exceptions=True, fast_fail=True):
         self._code = []
@@ -69,7 +71,7 @@ class CodeGenerator:
         self._validation_functions_done = set()
 
         if resolver is None:
-            resolver = RefResolver.from_schema(definition, store={})
+            resolver = RefResolver.from_schema(definition, store={}, id_next_to_ref=self.ID_NEXT_TO_REF)
         self._resolver = resolver
 
         # add main function to `self._needed_validation_functions`
