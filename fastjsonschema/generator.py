@@ -224,7 +224,7 @@ class CodeGenerator:
                 }
             }
         """
-        with self._resolver.in_scope(self._definition['$ref']):
+        with self._resolver.in_scope(self._resolver.get_ref(self._definition)):
             name = self._resolver.get_scope_name()
             uri = self._resolver.get_uri()
             if uri not in self._validation_functions_done:
@@ -329,7 +329,7 @@ class CodeGenerator:
         if not isinstance(definition, dict):
             return definition
         if "$ref" in definition and isinstance(definition["$ref"], str):
-            with self._resolver.resolving(definition["$ref"]) as schema:
+            with self._resolver.resolving(self._resolver.get_ref(definition)) as schema:
                 return schema
         # The same rules as in ref_resolver.subschemas: data stays as it is, and the
         # names in a map of schemas are names, not keywords.
