@@ -3,6 +3,9 @@
 * Fixed `$` in `patternProperties` matching before a trailing newline, which also made a `pattern` with the same regex accept a trailing newline
 * Fixed `$ref` and `$id` inside the values of `const`, `enum`, `default` and `examples` being treated as part of the schema, which could make `compile()` fail, change those values or replace another subschema with the same `$id`. Such an `$id`, or one in an entry named like these keywords inside a custom keyword (such as `x-defs`), is no longer registered, so a `$ref` to it is loaded through the handlers like any other URI
 * Fixed `compile()` and `compile_to_code()` rewriting the `$ref` values of the schema in place, so that compiling an object again under another `$id`, or as part of another schema, used the base URI of the first compilation. A `$ref` inside the `definition` of a `JsonSchemaValueException` now shows the value as written in the schema
+* Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
+* Changed an `id` inside `allOf`, `anyOf`, `oneOf` and an array-form `items` to set the base URI there as well, as it already does in every other subschema and in every draft (draft-06 and later don't define `id`)
+* Changed the `definition` of a `JsonSchemaValueException` to keep the `$ref`s inside arrays of other keywords as written. They were resolved at compile time, which could load them through a handler
 
 === 2.22.3 (2026-11-01)
 
