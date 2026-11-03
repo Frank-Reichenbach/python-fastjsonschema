@@ -133,3 +133,22 @@ def test_ref_object_in_data_keyword_under_urn_id_is_data(fast_fail):
     }, fast_fail=fast_fail)
 
     assert validator({'c': {'$ref': '#'}}) == {'c': {'$ref': '#'}, 'd': {'$ref': '#'}}
+
+
+# urn:example:root#foo and urn:example:root:foo get the same function name until the names are unique per
+# URI, as horejsek/python-fastjsonschema#224 makes them. Remove the mark once that is merged.
+@pytest.mark.xfail(strict=True, reason='needs unique function names (horejsek/python-fastjsonschema#224)')
+@pytest.mark.parametrize('fast_fail', [True, False])
+def test_plain_name_ref_under_urn_id_next_to_similar_urn(fast_fail):
+    validator = compile({
+        '$id': 'urn:example:root',
+        'definitions': {
+            'a': {'$id': '#foo', 'type': 'integer'},
+            'b': {'$id': 'urn:example:root:foo', 'type': 'string'},
+        },
+        'properties': {'a': {'$ref': '#foo'}, 'b': {'$ref': 'urn:example:root:foo'}},
+    }, fast_fail=fast_fail)
+
+    assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
+    with pytest.raises(JsonSchemaException):
+        validator({'b': 1})
