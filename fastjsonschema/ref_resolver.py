@@ -96,6 +96,22 @@ def join_uri(base: str, ref: str) -> str:
     return urlparse.urljoin(base, ref)
 
 
+def copy_document(node: Any, depth: int = 0) -> Any:
+    """
+    Copy the objects and arrays of a loaded document, as deep as ``walk`` accepts.
+    Any mapping becomes a ``dict``.
+    """
+    if depth >= MAX_SCHEMA_WALK_DEPTH:
+        raise JsonSchemaDefinitionException(
+            'Schema is too deeply nested (maximum depth is {})'.format(MAX_SCHEMA_WALK_DEPTH)
+        )
+    if isinstance(node, Mapping):
+        return {key: copy_document(value, depth + 1) for key, value in node.items()}
+    if isinstance(node, list):
+        return [copy_document(item, depth + 1) for item in node]
+    return node
+
+
 def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> Any:
     """
     Resolve a remote ``uri``.
@@ -134,15 +150,21 @@ class RefResolver:
         store: dict[str, Any] = {},
         cache: bool = True,
         handlers: Mapping[str, Callable[[str], Any]] = {},
+        *,
+        base_uri_is_id: bool = False,
     ) -> None:
         """
         `base_uri` is URI of the referring document from the `schema`.
         `store` is an dictionary that will be used to cache the fetched schemas
         (if `cache=True`).
+        `base_uri_is_id` says that `base_uri` is already the `$id` of the `schema`,
+        as `from_schema` sets it, so that the `$id` isn't applied to it again.
 
         Please notice that you can have caching problems when compiling schemas
         with colliding `$ref`. To force overwriting use `cache=False` or
-        explicitly pass the `store` argument (with a brand new dictionary)
+        explicitly pass the `store` argument (with a brand new dictionary).
+        With `cache=False`, every `$ref` into a remote document loads, copies
+        and walks that document again.
         """
         self.base_uri = base_uri
         self.resolution_scope = base_uri
@@ -150,13 +172,14 @@ class RefResolver:
         self.store = store
         self.cache = cache
         self.handlers = handlers
-        self._walked_uris: set[str] = set()
+        # The schema objects walked so far, by id(). Holding them keeps their ids from being
+        # reused while the resolver exists.
+        self._walked: dict[int, Any] = {id(schema): schema}
         # The $refs that walk() resolved, by id() of the object with the $ref. The schema itself
         # stays unchanged: its objects can be part of other schemas with other base URIs.
         # Holding the object keeps its id from being reused while the resolver exists.
         self._resolved_refs: dict[int, tuple[dict[str, Any], str]] = {}
-        self.walk(schema)
-        self._walked_uris.add(normalize(base_uri) if base_uri else '')
+        self.walk(schema, id_applied=base_uri_is_id)
 
     @classmethod
     def from_schema(
@@ -172,28 +195,29 @@ class RefResolver:
             get_id(schema) if isinstance(schema, dict) else '',
             schema,
             handlers=handlers,
+            base_uri_is_id=True,
             **kwargs
         )
 
     @contextlib.contextmanager
-    def in_scope(self, scope: str) -> Iterator[None]:
+    def in_scope(self, scope: str, *, resolved: bool = False) -> Iterator[None]:
         """
-        Context manager to handle current scope.
+        Context manager to handle current scope. A ``resolved`` scope is used as it is.
         """
         old_scope = self.resolution_scope
-        self.resolution_scope = join_uri(old_scope, scope)
+        self.resolution_scope = scope if resolved else join_uri(old_scope, scope)
         try:
             yield
         finally:
             self.resolution_scope = old_scope
 
     @contextlib.contextmanager
-    def resolving(self, ref: str) -> Iterator[Any]:
+    def resolving(self, ref: str, *, resolved: bool = False) -> Iterator[Any]:
         """
         Context manager which resolves a JSON ``ref`` and enters the
-        resolution scope of this ref.
+        resolution scope of this ref. A ``resolved`` ref is used as it is.
         """
-        new_uri = join_uri(self.resolution_scope, ref)
+        new_uri = ref if resolved else join_uri(self.resolution_scope, ref)
         uri, fragment = urlparse.urldefrag(new_uri)
 
         document_uri = uri or self.base_uri
@@ -203,15 +227,17 @@ class RefResolver:
         elif not uri or uri == self.base_uri:
             schema = self.schema
         else:
-            schema = resolve_remote(uri, self.handlers)
+            # A copy, so that each loaded document has its own objects: walk() resolves the $refs
+            # of an object once, and handlers can return the same objects for several URIs.
+            schema = copy_document(resolve_remote(uri, self.handlers))
             if self.cache:
                 self.store[normalize(uri)] = schema
 
         old_base_uri, old_schema = self.base_uri, self.schema
         self.base_uri, self.schema = document_uri, schema
         try:
-            with self.in_scope(document_uri):
-                self._ensure_walked(document_uri, schema)
+            with self.in_scope(document_uri, resolved=True):
+                self._ensure_walked(schema)
                 if fragment and not fragment.startswith('/'):
                     plain_name = normalize(join_uri(document_uri, '#' + fragment))
                     if plain_name in self.store:
@@ -222,12 +248,10 @@ class RefResolver:
         finally:
             self.base_uri, self.schema = old_base_uri, old_schema
 
-    def _ensure_walked(self, uri: str, schema: Any) -> None:
-        normalized = normalize(uri) if uri else ''
-        if normalized in self._walked_uris:
-            return
-        self.walk(schema, rewrite_refs=False)
-        self._walked_uris.add(normalized)
+    def _ensure_walked(self, schema: Any) -> None:
+        if id(schema) not in self._walked:
+            self._walked[id(schema)] = schema
+            self.walk(schema, loaded=True)
 
     def get_ref(self, node: dict[str, Any]) -> str:
         """
@@ -235,6 +259,12 @@ class RefResolver:
         """
         resolved = self._resolved_refs.get(id(node))
         return node['$ref'] if resolved is None else resolved[1]
+
+    def is_resolved(self, node: dict[str, Any]) -> bool:
+        """
+        Whether ``walk`` resolved the ``$ref`` of ``node``, so that ``get_ref`` returns it resolved.
+        """
+        return id(node) in self._resolved_refs
 
     def get_uri(self) -> str:
         return normalize(self.resolution_scope)
@@ -248,10 +278,17 @@ class RefResolver:
         name = name.lower().rstrip('_')
         return name
 
-    def walk(self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True) -> None:
+    # The loops stay inline: each level of the schema takes one stack frame, so the depth limit
+    # raises JsonSchemaDefinitionException before Python's recursion limit.
+    def walk(  # pylint: disable=too-many-branches
+        self, node: dict[str, Any] | bool, depth: int = 0, *, id_applied: bool = False, loaded: bool = False,
+    ) -> None:
         """
         Walk thru schema, register ``id`` and resolve ``$ref`` instances. The schema
         stays unchanged; the resolved ``$ref`` values are available through ``get_ref``.
+        ``id_applied`` says that the ``$id`` of ``node`` is already the current scope.
+        ``loaded`` says that ``node`` is the root of a loaded document, whose base URI
+        is the current scope, the URI it was loaded from.
         """
         if depth >= MAX_SCHEMA_WALK_DEPTH:
             raise JsonSchemaDefinitionException(
@@ -262,13 +299,24 @@ class RefResolver:
             pass
         elif '$ref' in node and isinstance(node['$ref'], str):
             # The first base URI wins if the same object is reached again under another one.
-            if rewrite_refs and id(node) not in self._resolved_refs:
-                self._resolved_refs[id(node)] = (node, join_uri(self.resolution_scope, node['$ref']))
+            # A $ref that isn't a valid URI stays unresolved. If it is used, the generator reports it.
+            if id(node) not in self._resolved_refs:
+                with contextlib.suppress(ValueError):
+                    self._resolved_refs[id(node)] = (node, join_uri(self.resolution_scope, node['$ref']))
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
-            with self.in_scope(get_id(node)):
-                self.store[normalize(self.resolution_scope)] = node
+            if loaded:
+                # As in 2.22.3 and jsonschema, the $id of a loaded document doesn't change its base
+                # URI. A $ref to that $id still finds the document.
+                self.store[normalize(join_uri(self.resolution_scope, get_id(node)))] = node
                 for sub, levels in subschemas(node):
-                    self.walk(sub, depth + levels, rewrite_refs)
+                    self.walk(sub, depth + levels)
+                return
+            with self.in_scope(get_id(node), resolved=id_applied):
+                self.store[normalize(self.resolution_scope)] = node
+                # A $ref to this $id resolves to this node, which must not be walked again.
+                self._walked[id(node)] = node
+                for sub, levels in subschemas(node):
+                    self.walk(sub, depth + levels)
         else:
             for sub, levels in subschemas(node):
-                self.walk(sub, depth + levels, rewrite_refs)
+                self.walk(sub, depth + levels)

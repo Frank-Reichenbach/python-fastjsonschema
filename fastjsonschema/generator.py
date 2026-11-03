@@ -151,7 +151,7 @@ class CodeGenerator:
         """
         self._validation_functions_done.add(uri)
         self.l('')
-        with self._resolver.resolving(uri) as definition:
+        with self._resolver.resolving(uri, resolved=True) as definition:
             with self.l('def {}(data, custom_formats={{}}, name_prefix=None):', name):
                 if not self._fast_fail:
                     self.l('errors = []')
@@ -224,7 +224,8 @@ class CodeGenerator:
                 }
             }
         """
-        with self._resolver.in_scope(self._resolver.get_ref(self._definition)):
+        resolved = self._resolver.is_resolved(self._definition)
+        with self._resolver.in_scope(self._resolver.get_ref(self._definition), resolved=resolved):
             name = self._resolver.get_scope_name()
             uri = self._resolver.get_uri()
             if uri not in self._validation_functions_done:
@@ -327,8 +328,13 @@ class CodeGenerator:
         if not isinstance(definition, dict):
             return definition
         if "$ref" in definition and isinstance(definition["$ref"], str):
-            with self._resolver.resolving(self._resolver.get_ref(definition)) as schema:
-                return schema
+            resolved = self._resolver.is_resolved(definition)
+            try:
+                with self._resolver.resolving(self._resolver.get_ref(definition), resolved=resolved) as schema:
+                    return schema
+            except ValueError:
+                # Not a valid URI: shown as written. If the $ref is used, generate_ref() reports it.
+                return definition
         # The same rules as in ref_resolver.subschemas: data stays as it is, the names in
         # a map of schemas are names, not keywords, and only some keywords hold arrays of schemas.
         expanded = {}
