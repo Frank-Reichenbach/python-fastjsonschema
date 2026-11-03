@@ -2,6 +2,9 @@
 
 * Fixed `$` in `patternProperties` matching before a trailing newline, which also made a `pattern` with the same regex accept a trailing newline
 * Fixed `$ref` and `$id` inside the values of `const`, `enum`, `default` and `examples` being treated as part of the schema, which could make `compile()` fail, change those values or replace another subschema with the same `$id`. Such an `$id`, or one in an entry named like these keywords inside a custom keyword (such as `x-defs`), is no longer registered, so a `$ref` to it is loaded through the handlers like any other URI
+* Fixed refs starting with `#` (`#`, `#/definitions/...`, plain names like `#foo`) inside a subschema whose `$id` has a scheme such as `urn:` resolving against the root schema instead of that subschema, unlike with an `http` `$id`
+* Changed such a ref whose target exists only in the root schema to raise `JsonSchemaDefinitionException` at compile time, as with an `http` `$id`
+* Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
 
 === 2.22.3 (2026-11-01)
 
