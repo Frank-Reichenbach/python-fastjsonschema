@@ -331,8 +331,12 @@ class CodeGenerator:
             return definition
         if "$ref" in definition and isinstance(definition["$ref"], str):
             resolved = self._resolver.is_resolved(definition)
-            with self._resolver.resolving(self._resolver.get_ref(definition), resolved=resolved) as schema:
-                return schema
+            try:
+                with self._resolver.resolving(self._resolver.get_ref(definition), resolved=resolved) as schema:
+                    return schema
+            except ValueError:
+                # Not a valid URI: shown as written. If the $ref is used, generate_ref() reports it.
+                return definition
         return {k: self._expand_refs(v) for k, v in definition.items()}
 
     def _is_variable_in_scope(self, variable_name):
