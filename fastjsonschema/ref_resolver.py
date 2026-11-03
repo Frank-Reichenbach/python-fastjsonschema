@@ -76,6 +76,7 @@ def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> An
     return result
 
 
+# pylint: disable=too-many-instance-attributes
 class RefResolver:
     """
     Resolve JSON References.
@@ -106,6 +107,10 @@ class RefResolver:
         self.cache = cache
         self.handlers = handlers
         self._walked_uris: set[str] = set()
+        # The $refs that walk() resolved, by id() of the object with the $ref. The schema itself
+        # stays unchanged: its objects can be part of other schemas with other base URIs.
+        # Holding the object keeps its id from being reused while the resolver exists.
+        self._resolved_refs: dict[int, tuple[dict[str, Any], str]] = {}
         self.walk(schema)
         self._walked_uris.add(normalize(base_uri) if base_uri else '')
 
@@ -180,6 +185,13 @@ class RefResolver:
         self.walk(schema, rewrite_refs=False)
         self._walked_uris.add(normalized)
 
+    def get_ref(self, node: dict[str, Any]) -> str:
+        """
+        The ``$ref`` of ``node``, resolved against its base URI if ``walk`` reached it.
+        """
+        resolved = self._resolved_refs.get(id(node))
+        return node['$ref'] if resolved is None else resolved[1]
+
     def get_uri(self) -> str:
         return normalize(self.resolution_scope)
 
@@ -194,7 +206,8 @@ class RefResolver:
 
     def walk(self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True) -> None:
         """
-        Walk thru schema and dereferencing ``id`` and ``$ref`` instances
+        Walk thru schema, register ``id`` and resolve ``$ref`` instances. The schema
+        stays unchanged; the resolved ``$ref`` values are available through ``get_ref``.
         """
         if depth >= MAX_SCHEMA_WALK_DEPTH:
             raise JsonSchemaDefinitionException(
@@ -204,9 +217,9 @@ class RefResolver:
         if isinstance(node, bool):
             pass
         elif '$ref' in node and isinstance(node['$ref'], str):
-            if rewrite_refs:
-                ref = node['$ref']
-                node['$ref'] = urlparse.urljoin(self.resolution_scope, ref)
+            # The first base URI wins if the same object is reached again under another one.
+            if rewrite_refs and id(node) not in self._resolved_refs:
+                self._resolved_refs[id(node)] = (node, urlparse.urljoin(self.resolution_scope, node['$ref']))
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
             with self.in_scope(get_id(node)):
                 self.store[normalize(self.resolution_scope)] = node
