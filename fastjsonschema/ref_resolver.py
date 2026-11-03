@@ -97,6 +97,19 @@ def join_uri(base: str, ref: str) -> str:
     return urlparse.urljoin(base, ref)
 
 
+def id_next_to_ref_applies(schema: Any) -> bool:
+    """
+    Whether an ``$id`` next to a ``$ref`` counts, as in 2019-09, which fastjsonschema uses unless
+    ``$schema`` names draft-04, draft-06 or draft-07 (as in ``_get_code_generator_class``). Those
+    drafts ignore every keyword next to a ``$ref``. The ``$schema`` of the root schema decides for
+    every schema the resolver loads, as it decides the code generator.
+    """
+    version = schema.get('$schema', '') if isinstance(schema, dict) else ''
+    if not isinstance(version, str):
+        return True
+    return not any(draft in version for draft in ('draft-04', 'draft-06', 'draft-07'))
+
+
 def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> Any:
     """
     Resolve a remote ``uri``.
@@ -160,6 +173,7 @@ class RefResolver:
         # The schema objects walked so far, by id(). Holding them keeps their ids from being
         # reused while the resolver exists.
         self._walked: dict[int, Any] = {id(schema): schema}
+        self._id_next_to_ref_applies = id_next_to_ref_applies(schema)
         # The $refs that walk() resolved, by id() of the object with the $ref. The schema itself
         # stays unchanged: its objects can be part of other schemas with other base URIs.
         # Holding the object keeps its id from being reused while the resolver exists.
@@ -263,6 +277,22 @@ class RefResolver:
         name = name.lower().rstrip('_')
         return name
 
+    def _walk_ref(self, node: dict[str, Any], depth: int) -> None:
+        """
+        Resolve the ``$ref`` of ``node`` and walk the definitions next to it.
+        """
+        # The first base URI wins if the same object is reached again under another one.
+        # A $ref that isn't a valid URI stays unresolved. If it is used, the generator reports it.
+        if id(node) not in self._resolved_refs:
+            with contextlib.suppress(ValueError):
+                self._resolved_refs[id(node)] = (node, join_uri(self.resolution_scope, node['$ref']))
+        # The other keywords next to a $ref are ignored, but another $ref can point into the
+        # definitions there, so the $ids and $refs in those schemas still count. Below them,
+        # schemas are walked as everywhere else, unknown keywords included.
+        definitions = {key: node[key] for key in ('$defs', 'definitions') if key in node}
+        for sub, levels in subschemas(definitions):
+            self.walk(sub, depth + levels)
+
     def walk(self, node: dict[str, Any] | bool, depth: int = 0, *, id_applied: bool = False) -> None:
         """
         Walk thru schema, register ``id`` and resolve ``$ref`` instances. The schema
@@ -277,11 +307,18 @@ class RefResolver:
         if isinstance(node, bool):
             pass
         elif '$ref' in node and isinstance(node['$ref'], str):
-            # The first base URI wins if the same object is reached again under another one.
-            # A $ref that isn't a valid URI stays unresolved. If it is used, the generator reports it.
-            if id(node) not in self._resolved_refs:
-                with contextlib.suppress(ValueError):
-                    self._resolved_refs[id(node)] = (node, join_uri(self.resolution_scope, node['$ref']))
+            # Only $id: in 2019-09, the id of draft-04 is an unknown keyword.
+            node_id = node.get('$id')
+            if self._id_next_to_ref_applies and isinstance(node_id, str) and node_id:
+                # In 2019-09, an $id next to a $ref identifies the object and is the base URI of
+                # the $ref and of the definitions next to it.
+                with self.in_scope(node_id, resolved=id_applied):
+                    self.store[normalize(self.resolution_scope)] = node
+                    self._walked[id(node)] = node
+                    self._walk_ref(node, depth)
+            else:
+                # Earlier drafts ignore every keyword next to a $ref, an $id included.
+                self._walk_ref(node, depth)
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
             with self.in_scope(get_id(node), resolved=id_applied):
                 self.store[normalize(self.resolution_scope)] = node
