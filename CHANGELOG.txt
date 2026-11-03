@@ -6,6 +6,9 @@
 * Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
 * Changed an `id` inside `allOf`, `anyOf`, `oneOf` and an array-form `items` to set the base URI there as well, as it already does in every other subschema and in every draft (draft-06 and later don't define `id`)
 * Changed the `definition` of a `JsonSchemaValueException` to keep the `$ref`s inside arrays of other keywords as written. They were resolved at compile time, which could load them through a handler
+* Fixed refs starting with `#` (`#`, `#/definitions/...`, plain names like `#foo`) inside a subschema whose `$id` has a scheme such as `urn:` resolving against the root schema instead of that subschema, unlike with an `http` `$id`
+* Changed such a ref whose target exists only in the root schema to raise `JsonSchemaDefinitionException` at compile time, as with an `http` `$id`
+* Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
 
 === 2.22.3 (2026-11-01)
 
