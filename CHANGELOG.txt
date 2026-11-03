@@ -2,6 +2,7 @@
 
 * Fixed `$` in `patternProperties` matching before a trailing newline, which also made a `pattern` with the same regex accept a trailing newline
 * Fixed `compile()` and `compile_to_code()` rewriting the `$ref` values of the schema in place, so that compiling an object again under another `$id`, or as part of another schema, used the base URI of the first compilation. A `$ref` inside the `definition` of a `JsonSchemaValueException` now shows the value as written in the schema
+* Fixed a relative `$id` with a directory, such as `schemas/item.json`, being applied more than once, so that refs below it resolved to `schemas/schemas/item.json`, and `compile()` didn't return for a subschema with such an `$id` that refers to itself. Such a nested `$id` is no longer also registered under the doubled URI
 
 === 2.22.3 (2026-11-01)
 
