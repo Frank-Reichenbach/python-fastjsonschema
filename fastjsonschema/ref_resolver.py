@@ -19,6 +19,10 @@ from urllib.parse import unquote
 
 from .exceptions import JsonSchemaDefinitionException
 
+# keywords whose values are data, not schemas
+DATA_KEYWORDS = ('const', 'default', 'enum', 'examples')
+# keywords whose values map names to schemas
+SCHEMA_MAPS = ('$defs', 'definitions', 'dependencies', 'dependentSchemas', 'patternProperties', 'properties')
 MAX_SCHEMA_WALK_DEPTH = min(500, sys.getrecursionlimit() // 2)
 
 
@@ -50,6 +54,21 @@ def resolve_path(schema: Any, fragment: str) -> Any:
 
 def normalize(uri: str) -> str:
     return urlparse.urlsplit(uri).geturl()
+
+
+def subschemas(node: dict[str, Any]) -> Iterator[tuple[dict[str, Any], int]]:
+    """
+    Yield the subschemas of ``node`` that are objects, with how many levels below ``node`` they are.
+    """
+    for key, item in node.items():
+        if key in DATA_KEYWORDS or not isinstance(item, dict):
+            continue
+        if key in SCHEMA_MAPS:
+            for sub in item.values():
+                if isinstance(sub, dict):
+                    yield sub, 2
+        else:
+            yield item, 1
 
 
 def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> Any:
@@ -210,10 +229,8 @@ class RefResolver:
         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
             with self.in_scope(get_id(node)):
                 self.store[normalize(self.resolution_scope)] = node
-                for _, item in node.items():
-                    if isinstance(item, dict):
-                        self.walk(item, depth + 1, rewrite_refs)
+                for sub, levels in subschemas(node):
+                    self.walk(sub, depth + levels, rewrite_refs)
         else:
-            for _, item in node.items():
-                if isinstance(item, dict):
-                    self.walk(item, depth + 1, rewrite_refs)
+            for sub, levels in subschemas(node):
+                self.walk(sub, depth + levels, rewrite_refs)
