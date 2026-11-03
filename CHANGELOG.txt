@@ -12,6 +12,9 @@
 * Fixed refs in a schema loaded through `handlers` ignoring the `$id` of the subschema they are in, and the `$id` of that schema if it is relative (regression in 2.22.3)
 * Fixed refs in a schema loaded through `handlers` ignoring the `$id`s in it when `RefResolver` runs with `cache=False` and the schema is loaded a second time
 * Fixed `compile()` failing with `ValueError` for a `$ref` that isn't a valid URI inside the value of an unknown keyword, such as `{"x-note": {"$ref": "http://[bad"}}`, in a schema with an `$id`
+* Fixed the `$id` of a schema inside `definitions` or `$defs` next to a `$ref`, such as `{"$ref": "#/definitions/a", "definitions": {"a": {"$id": ...}}}`, being ignored, so that the refs inside that schema resolved against the outer base URI and a `$ref` to that `$id` was loaded through a handler
+* Changed schemas under `definitions` and `$defs` next to a `$ref` to count toward the nesting limit of 500 levels, as schemas everywhere else do
+* Fixed an `$id` next to a `$ref` being ignored in 2019-09, which is also used for schemas without `$schema`: it now identifies that schema and is the base URI of the `$ref` and of the definitions next to it. Draft-04 to draft-07 still ignore it, as they require, except in the root schema, whose `$id` is the base URI in every draft as before
 
 === 2.22.3 (2026-11-01)
 
