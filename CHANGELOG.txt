@@ -1,6 +1,28 @@
 === UNRELEASED
 
+* Fixed `compile()` failing with `ValueError` for a `$ref` that isn't a valid URI inside the value of an unknown keyword, such as `{"x-note": {"$ref": "http://[bad"}}`, in a schema with an `$id`
+* Fixed JSON pointers with an empty key, such as `#/` and `#//child`: leading empty keys were dropped, so `#/` meant the whole document
+* Fixed two refs whose targets differ only in case or punctuation (such as `#/definitions/user-id` and `#/definitions/user_id`) calling the same generated function, so that a `$ref` validated against the wrong schema, and `compile()` could return the validator of a referenced schema instead of the whole schema
+* Fixed `NameError` during validation and `ValueError` at compile time for two spellings of one URI, such as `?#/definitions/ab` and `#/definitions/ab`
 * Fixed `$` in `patternProperties` matching before a trailing newline, which also made a `pattern` with the same regex accept a trailing newline
+* Fixed `$ref` and `$id` inside the values of `const`, `enum`, `default` and `examples` being treated as part of the schema, which could make `compile()` fail, change those values or replace another subschema with the same `$id`. Such an `$id`, or one in an entry named like these keywords inside a custom keyword (such as `x-defs`), is no longer registered, so a `$ref` to it is loaded through the handlers like any other URI
+* Fixed refs starting with `#` (`#`, `#/definitions/...`, plain names like `#foo`) inside a subschema whose `$id` has a scheme such as `urn:` resolving against the root schema instead of that subschema, unlike with an `http` `$id`
+* Changed such a ref whose target exists only in the root schema to raise `JsonSchemaDefinitionException` at compile time, as with an `http` `$id`
+* Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
+* Fixed `compile()` and `compile_to_code()` rewriting the `$ref` values of the schema in place, so that compiling an object again under another `$id`, or as part of another schema, used the base URI of the first compilation. A `$ref` inside the `definition` of a `JsonSchemaValueException` now shows the value as written in the schema
+* Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
+* Changed an `id` inside `allOf`, `anyOf`, `oneOf` and an array-form `items` to set the base URI there as well, as it already does in every other subschema and in every draft (draft-06 and later don't define `id`)
+* Changed the `definition` of a `JsonSchemaValueException` to keep the `$ref`s inside arrays of other keywords as written. They were resolved at compile time, which could load them through a handler
+* Fixed a relative `$id` with a directory, such as `schemas/item.json`, being applied more than once, so that refs below it resolved to `schemas/schemas/item.json`, and `compile()` didn't return for a subschema with such an `$id` that refers to itself. Such a nested `$id` is no longer also registered under the doubled URI
+* Fixed refs in a schema loaded through `handlers` ignoring the `$id` of the subschema they are in (regression in 2.22.3). The `$id` of the loaded schema itself still doesn't change its base URI, the URI it was loaded from, as in 2.22.3 and `jsonschema`
+* Fixed refs in a schema loaded through `handlers` ignoring the `$id`s in it when `RefResolver` runs with `cache=False` and the schema is loaded a second time
+* Fixed an object used twice in one schema under two different `$id`s resolving its refs against the first `$id` in both places
+* Fixed the `$id` of a schema inside `definitions` or `$defs` next to a `$ref`, such as `{"$ref": "#/definitions/a", "definitions": {"a": {"$id": ...}}}`, being ignored, so that the refs inside that schema resolved against the outer base URI and a `$ref` to that `$id` was loaded through a handler
+* Changed schemas under `definitions` and `$defs` next to a `$ref` to count toward the nesting limit, as schemas everywhere else do
+* Changed an `$id` next to a `$ref` in 2019-09, which is also used for schemas without `$schema`, to identify that schema and to be the base URI of the `$ref` and of the definitions next to it, as 2019-09 requires. So such a `$ref` can no longer point into the outer schema with `#/...` (it raises `JsonSchemaDefinitionException`), and a relative `$ref` there resolves against that `$id`
+* Changed the keywords next to a `$ref` in 2019-09, which is also used for schemas without `$schema`, to apply, as 2019-09 requires: `{"$ref": "#/$defs/list", "maxItems": 1}` now checks `maxItems`, and `$id`s and refs in such keywords count. Draft-04 to draft-07 still ignore them, as they require
+* Fixed an `$id` inside the value of an unknown keyword replacing a real schema with the same `$id`. Without a real one it stays available, so subschemas under custom keywords can still be referred to by `$id`
+* Changed values nested 500 levels or deeper anywhere in a schema to raise `JsonSchemaDefinitionException`. Arrays that deep weren't checked: they failed with `RecursionError` if a keyword used them and compiled if none did
 
 === 2.22.3 (2026-11-01)
 
