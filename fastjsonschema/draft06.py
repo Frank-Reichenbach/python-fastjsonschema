@@ -38,10 +38,7 @@ class CodeGeneratorDraft06(CodeGeneratorDraft04):
     def _generate_func_code_block(self, definition):
         if isinstance(definition, bool):
             return self.generate_boolean_schema()
-        elif '$ref' in definition:
-            # needed because ref overrides any sibling keywords
-            return self.generate_ref()
-        return self.run_generate_functions(definition)
+        return super()._generate_func_code_block(definition)
 
     def generate_boolean_schema(self):
         """

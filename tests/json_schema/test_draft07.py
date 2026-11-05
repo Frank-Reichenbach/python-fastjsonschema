@@ -13,7 +13,6 @@ def pytest_generate_tests(metafunc):
             'float-overflow.json',
             'idn-hostname.json',
             'iri.json',
-            'unknownKeyword.json',
             'date-time.json',
             'date.json',
 
@@ -21,8 +20,6 @@ def pytest_generate_tests(metafunc):
             'time.json',
 
             # TODO: fix ref
-            'ref.json',
-            'id.json',
             'cross-draft.json',
         ],
     )

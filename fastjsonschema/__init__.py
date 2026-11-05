@@ -211,7 +211,7 @@ def compile(
 
     Supported implementations are draft-04, draft-06 and draft-07. Which version
     should be used is determined by `$draft` in your ``definition``. When not
-    specified, the latest implementation is used (draft-07).
+    specified, the latest implementation is used (2019-09).
 
     .. code-block:: python
 
@@ -358,8 +358,11 @@ def _factory(
     detailed_exceptions: bool = True,
     fast_fail: bool = True,
 ) -> tuple[RefResolver, CodeGeneratorDraft04]:
-    resolver = RefResolver.from_schema(definition, handlers=handlers, store={})
-    code_generator = _get_code_generator_class(definition)(
+    code_generator_class = _get_code_generator_class(definition)
+    resolver = RefResolver.from_schema(
+        definition, handlers=handlers, store={}, keywords_next_to_ref=code_generator_class.KEYWORDS_NEXT_TO_REF,
+    )
+    code_generator = code_generator_class(
         definition,
         resolver=resolver,
         formats=formats,

@@ -5,7 +5,7 @@ import re
 
 from .exceptions import JsonSchemaValueException, JsonSchemaValuesException, JsonSchemaDefinitionException
 from .indent import indent
-from .ref_resolver import RefResolver
+from .ref_resolver import DATA_KEYWORDS, SCHEMA_ARRAYS, SCHEMA_MAPS, RefResolver
 
 # Both mean "this subschema did not match": a subschema behind a $ref becomes its own
 # function, which reports through JsonSchemaValuesException while errors are collected.
@@ -33,6 +33,8 @@ class CodeGenerator:
     """
 
     INDENT = 4  # spaces
+    # Whether the keywords next to a $ref count, as in 2019-09; earlier drafts ignore them.
+    KEYWORDS_NEXT_TO_REF = False
 
     def __init__(self, definition, resolver=None, detailed_exceptions=True, fast_fail=True):
         self._code = []
@@ -69,7 +71,7 @@ class CodeGenerator:
         self._validation_functions_done = set()
 
         if resolver is None:
-            resolver = RefResolver.from_schema(definition, store={})
+            resolver = RefResolver.from_schema(definition, store={}, keywords_next_to_ref=self.KEYWORDS_NEXT_TO_REF)
         self._resolver = resolver
 
         # add main function to `self._needed_validation_functions`
@@ -151,7 +153,7 @@ class CodeGenerator:
         """
         self._validation_functions_done.add(uri)
         self.l('')
-        with self._resolver.resolving(uri) as definition:
+        with self._resolver.resolving(uri, resolved=True) as definition:
             with self.l('def {}(data, custom_formats={{}}, name_prefix=None):', name):
                 if not self._fast_fail:
                     self.l('errors = []')
@@ -197,8 +199,9 @@ class CodeGenerator:
         if not isinstance(definition, dict):
             raise JsonSchemaDefinitionException("definition must be an object")
         if '$ref' in definition:
-            # needed because ref overrides any sibling keywords
-            return self.generate_ref()
+            self.generate_ref()
+            # Before 2019-09, a $ref overrides any sibling keywords.
+            return 1 + (self.run_generate_functions(definition) if self.KEYWORDS_NEXT_TO_REF else 0)
         return self.run_generate_functions(definition)
 
     def run_generate_functions(self, definition):
@@ -224,7 +227,7 @@ class CodeGenerator:
                 }
             }
         """
-        with self._resolver.in_scope(self._definition['$ref']):
+        with self._resolver.in_scope(self._resolver.get_ref(self._definition), resolved=True):
             name = self._resolver.get_scope_name()
             uri = self._resolver.get_uri()
             if uri not in self._validation_functions_done:
@@ -324,14 +327,30 @@ class CodeGenerator:
         self.l(msg, *args, definition=repr_default(definition), rule=repr(rule), definition_rule=definition_rule)
 
     def _expand_refs(self, definition):
-        if isinstance(definition, list):
-            return [self._expand_refs(v) for v in definition]
         if not isinstance(definition, dict):
             return definition
         if "$ref" in definition and isinstance(definition["$ref"], str):
-            with self._resolver.resolving(definition["$ref"]) as schema:
-                return schema
-        return {k: self._expand_refs(v) for k, v in definition.items()}
+            try:
+                with self._resolver.resolving(self._resolver.get_ref(definition), resolved=True) as schema:
+                    return schema
+            except JsonSchemaDefinitionException:
+                raise
+            except ValueError:
+                # Not a valid URI: shown as written. If the $ref is used, generate_ref() reports it.
+                return definition
+        # The same rules as in ref_resolver.subschemas: data stays as it is, the names in
+        # a map of schemas are names, not keywords, and only some keywords hold arrays of schemas.
+        expanded = {}
+        for key, value in definition.items():
+            if key in DATA_KEYWORDS:
+                expanded[key] = value
+            elif key in SCHEMA_ARRAYS and isinstance(value, list):
+                expanded[key] = [self._expand_refs(sub) for sub in value]
+            elif key in SCHEMA_MAPS and isinstance(value, dict):
+                expanded[key] = {name: self._expand_refs(sub) for name, sub in value.items()}
+            else:
+                expanded[key] = self._expand_refs(value)
+        return expanded
 
     def _is_variable_in_scope(self, variable_name):
         """
