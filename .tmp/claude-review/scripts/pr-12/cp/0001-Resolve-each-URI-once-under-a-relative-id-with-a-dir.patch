@@ -1,0 +1,360 @@
+From a1e7dc318800f16f3e520b70d45f86b657be62ca Mon Sep 17 00:00:00 2001
+From: Frank Reichenbach <frank.w.reichenbach@web.de>
+Date: Tue, 3 Nov 2026 10:47:09 +0100
+Subject: [PATCH] Resolve each URI once under a relative $id with a directory
+
+A relative $id with a directory, such as schemas/item.json, was
+applied more than once, so refs below it resolved to
+schemas/schemas/item.json. As the root $id, it broke every ref
+resolved against it. For a subschema with such an $id that refers to
+itself, compile() didn't return. urljoin(uri, uri) returns uri only
+for absolute URIs and for paths without a directory, and several
+places resolved a URI that was already resolved:
+
+- walk() resolved the root $id against itself, because from_schema()
+  already starts the resolver in that scope.
+- resolving() resolved the URIs the generator passes, and the
+  document URI, against the current scope again.
+- generate_ref() and _expand_refs() resolved a $ref that walk() had
+  already resolved.
+- resolving() walked a subschema with an $id again under its URI and
+  registered it once more.
+
+is_resolved() tells which $refs walk() resolved. Callers use those,
+and URIs that are already resolved, as they are. Every other $ref is
+resolved against the scope as before. walk() also marks every
+subschema with an $id as walked.
+
+from_schema() tells the resolver that its base URI is the root $id
+(base_uri_is_id), so walk() doesn't apply that $id again. Comparing
+the two strings instead would also skip the $id when a caller passes
+a retrieval URI that happens to be equal to it. The third parameter
+of walk() stays rewrite_refs; id_applied is keyword-only.
+
+Assisted-by: Claude Opus 5.5 (code generation)
+Assisted-by: GPT-6.1 Terra (code review)
+---
+ CHANGELOG.txt                  |   1 +
+ fastjsonschema/generator.py    |   8 +-
+ fastjsonschema/ref_resolver.py |  35 +++++---
+ tests/test_integration.py      | 142 ++++++++++++++++++++++++++++++++-
+ 4 files changed, 171 insertions(+), 15 deletions(-)
+
+diff --git a/CHANGELOG.txt b/CHANGELOG.txt
+index 80ad5e6..b64ec81 100644
+--- a/CHANGELOG.txt
++++ b/CHANGELOG.txt
+@@ -8,6 +8,7 @@
+ * Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
+ * Fixed `compile()` and `compile_to_code()` rewriting the `$ref` values of the schema in place, so that compiling an object again under another `$id`, or as part of another schema, used the base URI of the first compilation. A `$ref` inside the `definition` of a `JsonSchemaValueException` now shows the value as written in the schema
+ * Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
++* Fixed a relative `$id` with a directory, such as `schemas/item.json`, being applied more than once, so that refs below it resolved to `schemas/schemas/item.json`
+ 
+ === 2.22.3 (2026-11-01)
+ 
+diff --git a/fastjsonschema/generator.py b/fastjsonschema/generator.py
+index 158391b..8cf8f4d 100644
+--- a/fastjsonschema/generator.py
++++ b/fastjsonschema/generator.py
+@@ -155,7 +155,7 @@ class CodeGenerator:
+         """
+         self._validation_functions_done.add(uri)
+         self.l('')
+-        with self._resolver.resolving(uri) as definition:
++        with self._resolver.resolving(uri, resolved=True) as definition:
+             with self.l('def {}(data, custom_formats={{}}, name_prefix=None):', name):
+                 if not self._fast_fail:
+                     self.l('errors = []')
+@@ -246,7 +246,8 @@ class CodeGenerator:
+                 }
+             }
+         """
+-        with self._resolver.in_scope(self._resolver.get_ref(self._definition)):
++        resolved = self._resolver.is_resolved(self._definition)
++        with self._resolver.in_scope(self._resolver.get_ref(self._definition), resolved=resolved):
+             name = self._validation_function_name()
+             uri = self._resolver.get_uri()
+             if uri not in self._validation_functions_done:
+@@ -351,7 +352,8 @@ class CodeGenerator:
+         if not isinstance(definition, dict):
+             return definition
+         if "$ref" in definition and isinstance(definition["$ref"], str):
+-            with self._resolver.resolving(self._resolver.get_ref(definition)) as schema:
++            resolved = self._resolver.is_resolved(definition)
++            with self._resolver.resolving(self._resolver.get_ref(definition), resolved=resolved) as schema:
+                 return schema
+         # The same rules as in ref_resolver.subschemas: data stays as it is, and the
+         # names in a map of schemas are names, not keywords.
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index 095b06d..73daa28 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -134,11 +134,15 @@ class RefResolver:
+         store: dict[str, Any] = {},
+         cache: bool = True,
+         handlers: Mapping[str, Callable[[str], Any]] = {},
++        *,
++        base_uri_is_id: bool = False,
+     ) -> None:
+         """
+         `base_uri` is URI of the referring document from the `schema`.
+         `store` is an dictionary that will be used to cache the fetched schemas
+         (if `cache=True`).
++        `base_uri_is_id` says that `base_uri` is already the `$id` of the `schema`,
++        as `from_schema` sets it, so that the `$id` isn't applied to it again.
+ 
+         Please notice that you can have caching problems when compiling schemas
+         with colliding `$ref`. To force overwriting use `cache=False` or
+@@ -155,7 +159,7 @@ class RefResolver:
+         # stays unchanged: its objects can be part of other schemas with other base URIs.
+         # Holding the object keeps its id from being reused while the resolver exists.
+         self._resolved_refs: dict[int, tuple[dict[str, Any], str]] = {}
+-        self.walk(schema)
++        self.walk(schema, id_applied=base_uri_is_id)
+         self._walked_uris.add(normalize(base_uri) if base_uri else '')
+ 
+     @classmethod
+@@ -172,28 +176,29 @@ class RefResolver:
+             get_id(schema) if isinstance(schema, dict) else '',
+             schema,
+             handlers=handlers,
++            base_uri_is_id=True,
+             **kwargs
+         )
+ 
+     @contextlib.contextmanager
+-    def in_scope(self, scope: str) -> Iterator[None]:
++    def in_scope(self, scope: str, resolved: bool = False) -> Iterator[None]:
+         """
+-        Context manager to handle current scope.
++        Context manager to handle current scope. A ``resolved`` scope is used as it is.
+         """
+         old_scope = self.resolution_scope
+-        self.resolution_scope = join_uri(old_scope, scope)
++        self.resolution_scope = scope if resolved else join_uri(old_scope, scope)
+         try:
+             yield
+         finally:
+             self.resolution_scope = old_scope
+ 
+     @contextlib.contextmanager
+-    def resolving(self, ref: str) -> Iterator[Any]:
++    def resolving(self, ref: str, resolved: bool = False) -> Iterator[Any]:
+         """
+         Context manager which resolves a JSON ``ref`` and enters the
+-        resolution scope of this ref.
++        resolution scope of this ref. A ``resolved`` ref is used as it is.
+         """
+-        new_uri = join_uri(self.resolution_scope, ref)
++        new_uri = ref if resolved else join_uri(self.resolution_scope, ref)
+         uri, fragment = urlparse.urldefrag(new_uri)
+ 
+         document_uri = uri or self.base_uri
+@@ -210,7 +215,7 @@ class RefResolver:
+         old_base_uri, old_schema = self.base_uri, self.schema
+         self.base_uri, self.schema = document_uri, schema
+         try:
+-            with self.in_scope(document_uri):
++            with self.in_scope(document_uri, resolved=True):
+                 self._ensure_walked(document_uri, schema)
+                 if fragment and not fragment.startswith('/'):
+                     plain_name = normalize(join_uri(document_uri, '#' + fragment))
+@@ -236,6 +241,12 @@ class RefResolver:
+         resolved = self._resolved_refs.get(id(node))
+         return node['$ref'] if resolved is None else resolved[1]
+ 
++    def is_resolved(self, node: dict[str, Any]) -> bool:
++        """
++        Whether ``walk`` resolved the ``$ref`` of ``node``, so that ``get_ref`` returns it resolved.
++        """
++        return id(node) in self._resolved_refs
++
+     def get_uri(self) -> str:
+         return normalize(self.resolution_scope)
+ 
+@@ -248,10 +259,13 @@ class RefResolver:
+         name = name.lower().rstrip('_')
+         return name
+ 
+-    def walk(self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True) -> None:
++    def walk(
++        self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True, *, id_applied: bool = False,
++    ) -> None:
+         """
+         Walk thru schema, register ``id`` and resolve ``$ref`` instances. The schema
+         stays unchanged; the resolved ``$ref`` values are available through ``get_ref``.
++        ``id_applied`` says that the ``$id`` of ``node`` is already the current scope.
+         """
+         if depth >= MAX_SCHEMA_WALK_DEPTH:
+             raise JsonSchemaDefinitionException(
+@@ -265,8 +279,9 @@ class RefResolver:
+             if rewrite_refs and id(node) not in self._resolved_refs:
+                 self._resolved_refs[id(node)] = (node, join_uri(self.resolution_scope, node['$ref']))
+         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
+-            with self.in_scope(get_id(node)):
++            with self.in_scope(get_id(node), resolved=id_applied):
+                 self.store[normalize(self.resolution_scope)] = node
++                self._walked_uris.add(normalize(self.resolution_scope))
+                 for sub, levels in subschemas(node):
+                     self.walk(sub, depth + levels, rewrite_refs)
+         else:
+diff --git a/tests/test_integration.py b/tests/test_integration.py
+index 47488af..c21721c 100644
+--- a/tests/test_integration.py
++++ b/tests/test_integration.py
+@@ -4,8 +4,14 @@ from urllib.parse import quote
+ 
+ import pytest
+ 
+-from fastjsonschema import JsonSchemaDefinitionException, JsonSchemaException, JsonSchemaValueException, compile, compile_to_code
+-from fastjsonschema.ref_resolver import RefResolver
++from fastjsonschema import (
++    JsonSchemaDefinitionException,
++    JsonSchemaException,
++    JsonSchemaValueException,
++    RefResolver,
++    compile,
++    compile_to_code,
++)
+ 
+ 
+ definition = {
+@@ -660,3 +666,135 @@ def test_schema_array_inside_data_keyword_is_data():
+     })
+ 
+     assert validator({'p': copy.deepcopy(value)}) == {'p': value}
++
++
++def no_handler(uri):
++    raise AssertionError('handler called with ' + uri)
++
++
++@pytest.mark.parametrize('schema_id', ['schemas/item.json', 'file:schemas/item.json'])
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_local_ref_under_relative_root_id_with_directory(schema_id, fast_fail):
++    validator = compile({
++        '$id': schema_id,
++        'definitions': {'count': {'type': 'integer'}},
++        'properties': {'count': {'$ref': '#/definitions/count'}},
++    }, handlers={'': no_handler, 'file': no_handler}, fast_fail=fast_fail)
++
++    assert validator({'count': 1}) == {'count': 1}
++    with pytest.raises(JsonSchemaException):
++        validator({'count': 'a'})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_error_definition_under_relative_root_id_with_directory(fast_fail):
++    validator = compile({
++        '$id': 'schemas/item.json',
++        'type': 'object',
++        'definitions': {'count': {'type': 'integer'}},
++        'properties': {'count': {'$ref': '#/definitions/count'}},
++    }, handlers={'': no_handler}, fast_fail=fast_fail)
++
++    with pytest.raises(JsonSchemaException) as exc:
++        validator('x')
++    errors = [exc.value] if fast_fail else exc.value.errors
++    assert errors[0].definition['properties'] == {'count': {'type': 'integer'}}
++
++
++@pytest.mark.parametrize('base_uri, schema_id, expected', [
++    ('http://example.com/dir/', 'item.json', 'http://example.com/dir/item.json#/definitions/count'),
++    # Constructed directly, the resolver applies the root $id to the base URI even if they are equal.
++    ('schemas/item.json', 'schemas/item.json', 'schemas/schemas/item.json#/definitions/count'),
++])
++def test_resolver_applies_root_id_to_base_uri(base_uri, schema_id, expected):
++    schema = {
++        '$id': schema_id,
++        'definitions': {'count': {'type': 'integer'}},
++        'properties': {'count': {'$ref': '#/definitions/count'}},
++    }
++    resolver = RefResolver(base_uri, schema, store={})
++
++    assert resolver.get_ref(schema['properties']['count']) == expected
++
++
++def test_relative_ref_under_relative_root_id_with_directory():
++    loaded = []
++
++    def handler(uri):
++        loaded.append(uri)
++        return {'type': 'integer'}
++
++    validator = compile({'$id': 'a/b/item.json', 'properties': {'x': {'$ref': 'other.json'}}}, handlers={'': handler})
++
++    assert validator({'x': 1}) == {'x': 1}
++    assert loaded == ['a/b/other.json']
++
++
++@pytest.mark.parametrize('ref', ['#', 'node.json'])
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_ref_to_subschema_with_relative_id_with_directory(ref, fast_fail):
++    validator = compile({
++        'properties': {'p': {
++            '$id': 'schemas/node.json',
++            'properties': {'q': {'$ref': ref}, 'n': {'type': 'integer'}},
++        }},
++    }, handlers={'': no_handler}, fast_fail=fast_fail)
++
++    assert validator({'p': {'q': {'n': 1}}}) == {'p': {'q': {'n': 1}}}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': {'q': {'n': 'a'}}})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_schema_with_relative_root_id_with_directory_compiled_twice(fast_fail):
++    schema = {
++        '$id': 'schemas/item.json',
++        'definitions': {'count': {'type': 'integer'}},
++        'properties': {'count': {'$ref': '#/definitions/count'}},
++    }
++
++    for _ in range(2):
++        validator = compile(schema, handlers={'': no_handler}, fast_fail=fast_fail)
++        assert validator({'count': 1}) == {'count': 1}
++        with pytest.raises(JsonSchemaException):
++            validator({'count': 'a'})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_local_ref_in_loaded_schema_under_relative_root_id_with_directory(fast_fail):
++    loaded = []
++
++    def handler(uri):
++        loaded.append(uri)
++        if uri != 'a/b/other.json':
++            raise AssertionError('handler called with ' + uri)
++        return {'definitions': {'c': {'type': 'integer'}}, 'properties': {'c': {'$ref': '#/definitions/c'}}}
++
++    validator = compile(
++        {'$id': 'a/b/root.json', 'properties': {'o': {'$ref': 'other.json'}}},
++        handlers={'': handler},
++        fast_fail=fast_fail,
++    )
++
++    assert validator({'o': {'c': 1}}) == {'o': {'c': 1}}
++    with pytest.raises(JsonSchemaException):
++        validator({'o': {'c': 'a'}})
++    assert loaded == ['a/b/other.json']
++
++
++def test_nested_relative_id_is_registered_once():
++    loaded = []
++
++    def handler(uri):
++        loaded.append(uri)
++        return {'type': 'string'}
++
++    validator = compile({
++        '$id': 'http://example.com/root/base.json',
++        'definitions': {'node': {'$id': 'child/node.json', 'type': 'integer'}},
++        # The generator works through the refs last in, first out: p's function is generated first.
++        'properties': {'q': {'$ref': 'child/child/node.json'}, 'p': {'$ref': 'child/node.json'}},
++    }, handlers={'http': handler})
++
++    assert validator({'p': 1, 'q': 'a'}) == {'p': 1, 'q': 'a'}
++    assert loaded == ['http://example.com/root/child/child/node.json']
+-- 
+2.54.0 (Apple Git-157)
+

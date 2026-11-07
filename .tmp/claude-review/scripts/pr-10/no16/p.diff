@@ -1,0 +1,58 @@
+commit 35ae4a3b9e7f5f4e97cf0d85b96f39e84d0c3247
+Author: Frank Reichenbach <frank.w.reichenbach@web.de>
+Date:   Tue Oct 27 10:29:39 2026 +0100
+
+    Resolve refs inside allOf, anyOf, oneOf and items arrays against their $id
+    
+    walk() descended only into object values, so it skipped the arrays of
+    allOf, anyOf, oneOf and an array-form items. A $ref inside them wasn't
+    resolved against the $id of its subschema. The generator resolved it
+    later against the base URI of the function it was generating, which
+    ignores every $id in between. An $id inside them wasn't registered,
+    so a $ref to it was loaded through a handler or urlopen.
+    
+    subschemas() now also yields the subschemas in these arrays. It still
+    skips the values of data keywords, so an allOf inside a const value
+    stays data.
+    
+    Every case in draft6 and draft7 ref.json of the JSON-Schema-Test-Suite
+    passes now, so ref.json is no longer marked as an expected failure
+    for these drafts.
+    
+    Assisted-by: Claude Opus 5.5 (code generation)
+    Assisted-by: GPT-6.1 Terra (code review)
+
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index 5a05e83..095b06d 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -21,6 +21,8 @@ from .exceptions import JsonSchemaDefinitionException
+ 
+ # keywords whose values are data, not schemas
+ DATA_KEYWORDS = ('const', 'default', 'enum', 'examples')
++# keywords whose values can be arrays of schemas (`items` can also be one schema)
++SCHEMA_ARRAYS = ('allOf', 'anyOf', 'oneOf', 'items')
+ # keywords whose values map names to schemas
+ SCHEMA_MAPS = ('$defs', 'definitions', 'dependencies', 'dependentSchemas', 'patternProperties', 'properties')
+ MAX_SCHEMA_WALK_DEPTH = min(500, sys.getrecursionlimit() // 2)
+@@ -61,13 +63,17 @@ def subschemas(node: dict[str, Any]) -> Iterator[tuple[dict[str, Any], int]]:
+     Yield the subschemas of ``node`` that are objects, with how many levels below ``node`` they are.
+     """
+     for key, item in node.items():
+-        if key in DATA_KEYWORDS or not isinstance(item, dict):
++        if key in DATA_KEYWORDS:
+             continue
+-        if key in SCHEMA_MAPS:
++        if key in SCHEMA_ARRAYS and isinstance(item, list):
++            for sub in item:
++                if isinstance(sub, dict):
++                    yield sub, 2
++        elif key in SCHEMA_MAPS and isinstance(item, dict):
+             for sub in item.values():
+                 if isinstance(sub, dict):
+                     yield sub, 2
+-        else:
++        elif isinstance(item, dict):
+             yield item, 1
+ 
+ 

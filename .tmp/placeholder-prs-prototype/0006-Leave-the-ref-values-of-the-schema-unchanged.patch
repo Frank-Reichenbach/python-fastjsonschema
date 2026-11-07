@@ -1,0 +1,164 @@
+From 9d554f4f5e3b4f1cb516cf9e219d1e58ae70075f Mon Sep 17 00:00:00 2001
+From: scratch <scratch@example.invalid>
+Date: Thu, 5 Nov 2026 09:07:55 +0100
+Subject: [PATCH 06/11] Leave the $ref values of the schema unchanged
+
+---
+ fastjsonschema/generator.py        |  4 +-
+ fastjsonschema/ref_resolver.py     | 21 ++++++++--
+ tests/test_ref_schema_unchanged.py | 67 ++++++++++++++++++++++++++++++
+ 3 files changed, 86 insertions(+), 6 deletions(-)
+ create mode 100644 tests/test_ref_schema_unchanged.py
+
+diff --git a/fastjsonschema/generator.py b/fastjsonschema/generator.py
+index cf140ba..a78c5d0 100644
+--- a/fastjsonschema/generator.py
++++ b/fastjsonschema/generator.py
+@@ -224,7 +224,7 @@ class CodeGenerator:
+                 }
+             }
+         """
+-        with self._resolver.in_scope(self._definition['$ref']):
++        with self._resolver.in_scope(self._resolver.get_ref(self._definition)):
+             name = self._resolver.get_scope_name()
+             uri = self._resolver.get_uri()
+             if uri not in self._validation_functions_done:
+@@ -330,7 +330,7 @@ class CodeGenerator:
+             return definition
+         if "$ref" in definition and isinstance(definition["$ref"], str):
+             try:
+-                with self._resolver.resolving(definition["$ref"]) as schema:
++                with self._resolver.resolving(self._resolver.get_ref(definition)) as schema:
+                     return schema
+             except JsonSchemaDefinitionException:
+                 raise
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index 0b7d598..04b1d9a 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -150,6 +150,10 @@ class RefResolver:
+         # The function name of each URI, and how many URIs share each name before it is made unique.
+         self._scope_names: dict[str, str] = {}
+         self._scope_name_counts: dict[str, int] = {}
++        # The $refs that walk() resolved, by id() of the object with the $ref. The schema itself
++        # stays unchanged: its objects can be part of other schemas with other base URIs.
++        # Holding the object keeps its id from being reused while the resolver exists.
++        self._resolved_refs: dict[int, tuple[dict[str, Any], str]] = {}
+         self.walk(schema)
+         self._walked_uris.add(normalize(base_uri) if base_uri else '')
+ 
+@@ -224,6 +228,13 @@ class RefResolver:
+         self.walk(schema, rewrite_refs=False)
+         self._walked_uris.add(normalized)
+ 
++    def get_ref(self, node: dict[str, Any]) -> str:
++        """
++        The ``$ref`` of ``node``, resolved against its base URI if ``walk`` reached it.
++        """
++        resolved = self._resolved_refs.get(id(node))
++        return node['$ref'] if resolved is None else resolved[1]
++
+     def get_uri(self) -> str:
+         return normalize(self.resolution_scope)
+ 
+@@ -244,7 +255,8 @@ class RefResolver:
+ 
+     def walk(self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True) -> None:
+         """
+-        Walk thru schema and dereferencing ``id`` and ``$ref`` instances
++        Walk thru schema, register ``id`` and resolve ``$ref`` instances. The schema
++        stays unchanged; the resolved ``$ref`` values are available through ``get_ref``.
+         """
+         if depth >= MAX_SCHEMA_WALK_DEPTH:
+             raise JsonSchemaDefinitionException(
+@@ -254,10 +266,11 @@ class RefResolver:
+         if isinstance(node, bool):
+             pass
+         elif '$ref' in node and isinstance(node['$ref'], str):
+-            if rewrite_refs:
+-                # A $ref that isn't a valid URI stays as it is. If it is used, the generator reports it.
++            # The first base URI wins if the same object is reached again under another one.
++            # A $ref that isn't a valid URI stays as it is. If it is used, the generator reports it.
++            if rewrite_refs and id(node) not in self._resolved_refs:
+                 with contextlib.suppress(ValueError):
+-                    node['$ref'] = join_uri(self.resolution_scope, node['$ref'])
++                    self._resolved_refs[id(node)] = (node, join_uri(self.resolution_scope, node['$ref']))
+         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
+             with self.in_scope(get_id(node)):
+                 self.store[normalize(self.resolution_scope)] = node
+diff --git a/tests/test_ref_schema_unchanged.py b/tests/test_ref_schema_unchanged.py
+new file mode 100644
+index 0000000..f871236
+--- /dev/null
++++ b/tests/test_ref_schema_unchanged.py
+@@ -0,0 +1,67 @@
++import copy
++
++import pytest
++
++from fastjsonschema import JsonSchemaException, compile, compile_to_code
++
++
++def refuse_handler(uri):
++    raise RuntimeError('handler called for ' + uri)
++
++
++def schema_with_refs(schema_id, defined_type):
++    return {
++        '$schema': 'http://json-schema.org/draft-07/schema#',
++        '$id': schema_id,
++        'definitions': {
++            'x': {'type': defined_type},
++            'node': {'$id': 'node.json', 'definitions': {'y': {'type': 'integer'}}, 'properties': {'y': {'$ref': '#/definitions/y'}}},
++        },
++        'properties': {
++            'p': {'$ref': '#/definitions/x'},
++            'q': {'allOf': [{'$ref': '#/definitions/x'}], 'items': [{'$ref': '#/definitions/x'}]},
++            'n': {'$ref': 'node.json'},
++        },
++    }
++
++
++@pytest.mark.parametrize('to_code', [False, True])
++def test_compile_leaves_schema_unchanged(to_code):
++    schema = schema_with_refs('http://example.com/root.json', 'integer')
++    original = copy.deepcopy(schema)
++
++    if to_code:
++        compile_to_code(schema, handlers={'http': refuse_handler})
++    else:
++        compile(schema, handlers={'http': refuse_handler})
++
++    assert schema == original
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_object_shared_by_schemas_with_different_ids(fast_fail):
++    shared = {'$ref': '#/definitions/x'}
++    first = {'$id': 'http://example.com/one.json', 'definitions': {'x': {'type': 'integer'}}, 'properties': {'p': shared}}
++    second = {'$id': 'http://example.com/two.json', 'definitions': {'x': {'type': 'string'}}, 'properties': {'p': shared}}
++
++    validate_first = compile(first, handlers={'http': refuse_handler}, fast_fail=fast_fail)
++    validate_second = compile(second, handlers={'http': refuse_handler}, fast_fail=fast_fail)
++
++    assert validate_first({'p': 1}) == {'p': 1}
++    assert validate_second({'p': 'a'}) == {'p': 'a'}
++    with pytest.raises(JsonSchemaException):
++        validate_second({'p': 1})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_schema_compiled_again_after_its_id_changed(fast_fail):
++    schema = schema_with_refs('http://example.com/v1.json', 'integer')
++    compile(schema, handlers={'http': refuse_handler}, fast_fail=fast_fail)
++    schema['$id'] = 'http://example.com/v2.json'
++
++    validator = compile(schema, handlers={'http': refuse_handler}, fast_fail=fast_fail)
++
++    assert validator({'p': 1, 'n': {'y': 1}}) == {'p': 1, 'n': {'y': 1}}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': 'a'})
++
+-- 
+2.54.0 (Apple Git-157)
+

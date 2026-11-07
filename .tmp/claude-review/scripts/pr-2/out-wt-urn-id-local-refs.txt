@@ -1,0 +1,114 @@
+ff=True  scheme urn:example:node                                 bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:example:node                                 good             fjs=valid        js=valid   
+ff=True  scheme urn:uuid:ee564b8a-7a87-4125-8c96-e9f123d6766f    bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:uuid:ee564b8a-7a87-4125-8c96-e9f123d6766f    good             fjs=valid        js=valid   
+ff=True  scheme tag:example.com,2026:node                        bad              fjs=invalid      js=invalid 
+ff=True  scheme tag:example.com,2026:node                        good             fjs=valid        js=valid   
+ff=True  scheme mailto:a@example.com                             bad              fjs=invalid      js=invalid 
+ff=True  scheme mailto:a@example.com                             good             fjs=valid        js=valid   
+ff=True  scheme myapp:/schemas/node                              bad              fjs=invalid      js=invalid 
+ff=True  scheme myapp:/schemas/node                              good             fjs=valid        js=valid   
+ff=True  scheme myapp://host/node                                bad              fjs=invalid      js=invalid 
+ff=True  scheme myapp://host/node                                good             fjs=valid        js=valid   
+ff=True  scheme s3://bucket/node.json                            bad              fjs=invalid      js=invalid 
+ff=True  scheme s3://bucket/node.json                            good             fjs=valid        js=valid   
+ff=True  scheme data:,node                                       bad              fjs=invalid      js=invalid 
+ff=True  scheme data:,node                                       good             fjs=valid        js=valid   
+ff=True  scheme urn:example:node?=q                              bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:example:node?=q                              good             fjs=valid        js=valid   
+ff=True  scheme urn:example:node?+r                              bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:example:node?+r                              good             fjs=valid        js=valid   
+ff=True  scheme URN:EXAMPLE:NODE                                 bad              fjs=invalid      js=invalid 
+ff=True  scheme URN:EXAMPLE:NODE                                 good             fjs=valid        js=valid   
+ff=True  scheme urn:example:node#                                bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:example:node#                                good             fjs=valid        js=valid   
+ff=True  scheme http://example.com/node.json                     bad              fjs=invalid      js=invalid 
+ff=True  scheme http://example.com/node.json                     good             fjs=valid        js=valid   
+ff=True  scheme file:///s/node.json                              bad              fjs=invalid      js=invalid 
+ff=True  scheme file:///s/node.json                              good             fjs=valid        js=valid   
+ff=True  scheme node.json                                        bad              fjs=invalid      js=invalid 
+ff=True  scheme node.json                                        good             fjs=valid        js=valid   
+ff=True  scheme x-y.z+w:node                                     bad              fjs=invalid      js=invalid 
+ff=True  scheme x-y.z+w:node                                     good             fjs=valid        js=valid   
+ff=True  scheme urn:ex:{node}                                    bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:ex:{node}                                    good             fjs=valid        js=valid   
+ff=True  scheme urn:ex:"q"                                       bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:ex:"q"                                       good             fjs=valid        js=valid   
+ff=True  scheme urn:ex:a%23b                                     bad              fjs=invalid      js=invalid 
+ff=True  scheme urn:ex:a%23b                                     good             fjs=valid        js=valid   
+ff=True  nested urn: inner self x=1                                               fjs=valid        js=valid   
+ff=True  nested urn: inner self x='a'                                             fjs=invalid      js=invalid 
+ff=True  nested urn: outer self x='a'                                             fjs=valid        js=valid   
+ff=True  nested urn: outer self x=1                                               fjs=invalid      js=invalid 
+ff=True  plain-name then # back to urn doc: k=1                                   fjs=valid        js=valid   
+ff=True  plain-name then # back to urn doc: k='a'                                 fjs=invalid      js=invalid 
+ff=True  relative 'b' under urn (root defines $id b)                              fjs=invalid      js=invalid 
+ff=True  relative 'b.json' under s3:// (s3://bucket/b.json exists)                fjs=COMPILE-ValueError: unknown url type: 'b.json' js=ORACLE-_WrappedReferencingError   <-- differs from jsonschema
+ff=True  bool false target under urn: v present                                   fjs=invalid      js=invalid 
+ff=True  bool false target under urn: v absent                                    fjs=valid        js=valid   
+ff=True  root urn: a=1                                                            fjs=valid        js=valid   
+ff=True  root urn: r.a='x'                                                        fjs=invalid      js=invalid 
+ff=True  handler no-$id remote cache=True x='a' deep                              fjs=invalid      js=invalid  handler_calls=1
+ff=True  handler no-$id remote cache=False x='a' deep                             fjs=invalid      js=invalid  handler_calls=1
+ff=True  2020-12 $defs under urn v='a'                                            fjs=invalid      js=invalid 
+ff=True  2020-12 $defs under urn v=1                                              fjs=valid        js=valid   
+ff=True  escaped pointer under urn v='x'                                          fjs=invalid      js=invalid 
+ff=True  escaped pointer under urn w=1                                            fjs=invalid      js=invalid 
+ff=True  escaped pointer under urn ok                                             fjs=valid        js=valid   
+ff=True  urn sub refs root-only def                                               fjs=DEF-ERR: Unresolvable ref: definitions js=ORACLE-_WrappedReferencingError   <-- differs from jsonschema
+ff=False scheme urn:example:node                                 bad              fjs=invalid      js=invalid 
+ff=False scheme urn:example:node                                 good             fjs=valid        js=valid   
+ff=False scheme urn:uuid:ee564b8a-7a87-4125-8c96-e9f123d6766f    bad              fjs=invalid      js=invalid 
+ff=False scheme urn:uuid:ee564b8a-7a87-4125-8c96-e9f123d6766f    good             fjs=valid        js=valid   
+ff=False scheme tag:example.com,2026:node                        bad              fjs=invalid      js=invalid 
+ff=False scheme tag:example.com,2026:node                        good             fjs=valid        js=valid   
+ff=False scheme mailto:a@example.com                             bad              fjs=invalid      js=invalid 
+ff=False scheme mailto:a@example.com                             good             fjs=valid        js=valid   
+ff=False scheme myapp:/schemas/node                              bad              fjs=invalid      js=invalid 
+ff=False scheme myapp:/schemas/node                              good             fjs=valid        js=valid   
+ff=False scheme myapp://host/node                                bad              fjs=invalid      js=invalid 
+ff=False scheme myapp://host/node                                good             fjs=valid        js=valid   
+ff=False scheme s3://bucket/node.json                            bad              fjs=invalid      js=invalid 
+ff=False scheme s3://bucket/node.json                            good             fjs=valid        js=valid   
+ff=False scheme data:,node                                       bad              fjs=invalid      js=invalid 
+ff=False scheme data:,node                                       good             fjs=valid        js=valid   
+ff=False scheme urn:example:node?=q                              bad              fjs=invalid      js=invalid 
+ff=False scheme urn:example:node?=q                              good             fjs=valid        js=valid   
+ff=False scheme urn:example:node?+r                              bad              fjs=invalid      js=invalid 
+ff=False scheme urn:example:node?+r                              good             fjs=valid        js=valid   
+ff=False scheme URN:EXAMPLE:NODE                                 bad              fjs=invalid      js=invalid 
+ff=False scheme URN:EXAMPLE:NODE                                 good             fjs=valid        js=valid   
+ff=False scheme urn:example:node#                                bad              fjs=invalid      js=invalid 
+ff=False scheme urn:example:node#                                good             fjs=valid        js=valid   
+ff=False scheme http://example.com/node.json                     bad              fjs=invalid      js=invalid 
+ff=False scheme http://example.com/node.json                     good             fjs=valid        js=valid   
+ff=False scheme file:///s/node.json                              bad              fjs=invalid      js=invalid 
+ff=False scheme file:///s/node.json                              good             fjs=valid        js=valid   
+ff=False scheme node.json                                        bad              fjs=invalid      js=invalid 
+ff=False scheme node.json                                        good             fjs=valid        js=valid   
+ff=False scheme x-y.z+w:node                                     bad              fjs=invalid      js=invalid 
+ff=False scheme x-y.z+w:node                                     good             fjs=valid        js=valid   
+ff=False scheme urn:ex:{node}                                    bad              fjs=invalid      js=invalid 
+ff=False scheme urn:ex:{node}                                    good             fjs=valid        js=valid   
+ff=False scheme urn:ex:"q"                                       bad              fjs=invalid      js=invalid 
+ff=False scheme urn:ex:"q"                                       good             fjs=valid        js=valid   
+ff=False scheme urn:ex:a%23b                                     bad              fjs=invalid      js=invalid 
+ff=False scheme urn:ex:a%23b                                     good             fjs=valid        js=valid   
+ff=False nested urn: inner self x=1                                               fjs=valid        js=valid   
+ff=False nested urn: inner self x='a'                                             fjs=invalid      js=invalid 
+ff=False nested urn: outer self x='a'                                             fjs=valid        js=valid   
+ff=False nested urn: outer self x=1                                               fjs=invalid      js=invalid 
+ff=False plain-name then # back to urn doc: k=1                                   fjs=valid        js=valid   
+ff=False plain-name then # back to urn doc: k='a'                                 fjs=invalid      js=invalid 
+ff=False relative 'b' under urn (root defines $id b)                              fjs=invalid      js=invalid 
+ff=False relative 'b.json' under s3:// (s3://bucket/b.json exists)                fjs=COMPILE-ValueError: unknown url type: 'b.json' js=ORACLE-_WrappedReferencingError   <-- differs from jsonschema
+ff=False bool false target under urn: v present                                   fjs=invalid      js=invalid 
+ff=False bool false target under urn: v absent                                    fjs=valid        js=valid   
+ff=False root urn: a=1                                                            fjs=valid        js=valid   
+ff=False root urn: r.a='x'                                                        fjs=invalid      js=invalid 
+ff=False 2020-12 $defs under urn v='a'                                            fjs=invalid      js=invalid 
+ff=False 2020-12 $defs under urn v=1                                              fjs=valid        js=valid   
+ff=False escaped pointer under urn v='x'                                          fjs=invalid      js=invalid 
+ff=False escaped pointer under urn w=1                                            fjs=invalid      js=invalid 
+ff=False escaped pointer under urn ok                                             fjs=valid        js=valid   
+ff=False urn sub refs root-only def                                               fjs=DEF-ERR: Unresolvable ref: definitions js=ORACLE-_WrappedReferencingError   <-- differs from jsonschema

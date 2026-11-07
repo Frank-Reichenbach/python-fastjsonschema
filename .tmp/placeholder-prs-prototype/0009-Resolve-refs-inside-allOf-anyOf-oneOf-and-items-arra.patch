@@ -1,0 +1,320 @@
+From 0208ca2c81efaeb9829c8cbd28b1a2a19d0dc674 Mon Sep 17 00:00:00 2001
+From: Frank Reichenbach <frank.w.reichenbach@web.de>
+Date: Tue, 3 Nov 2026 14:19:41 +0100
+Subject: [PATCH 09/11] Resolve refs inside allOf, anyOf, oneOf and items
+ arrays against their $id
+
+walk() descended only into object values, so it skipped the arrays of
+allOf, anyOf, oneOf and an array-form items. A $ref inside them wasn't
+resolved against the $id of its subschema. The generator resolved it
+later against the base URI of the function it was generating, which
+ignores every $id in between. An $id inside them wasn't registered,
+so a $ref to it was loaded through a handler or urlopen.
+
+subschemas() now also yields the subschemas in these arrays. It still
+skips the values of data keywords, so an allOf inside a const value
+stays data.
+
+Every case in draft6 and draft7 ref.json of the JSON-Schema-Test-Suite
+passes now, so ref.json is no longer marked as an expected failure
+for these drafts.
+
+_expand_refs(), which builds the definition of a
+JsonSchemaValueException, now follows the same rules: it expands the
+$refs in these arrays and leaves arrays of other keywords as they are.
+It used to resolve a $ref in any array, for example in an unknown
+keyword, which could load it through a handler at compile time.
+
+An id inside these arrays now sets the base URI there too. That is
+what walk() already does for every other subschema, in every draft,
+although draft-06 and later don't define id. The CHANGELOG says so.
+
+The tests are in tests/test_ref_arrays.py.
+---
+ CHANGELOG.txt                     |   4 +
+ fastjsonschema/generator.py       |  10 +-
+ fastjsonschema/ref_resolver.py    |  12 ++-
+ tests/json_schema/test_draft06.py |   3 -
+ tests/json_schema/test_draft07.py |   1 -
+ tests/test_ref_arrays.py          | 155 ++++++++++++++++++++++++++++++
+ 6 files changed, 173 insertions(+), 12 deletions(-)
+ create mode 100644 tests/test_ref_arrays.py
+
+diff --git a/CHANGELOG.txt b/CHANGELOG.txt
+index 33146c6..3c07ea2 100644
+--- a/CHANGELOG.txt
++++ b/CHANGELOG.txt
+@@ -9,6 +9,10 @@
+ * Fixed refs starting with `#` (`#`, `#/definitions/...`, plain names like `#foo`) inside a subschema whose `$id` has a scheme such as `urn:` resolving against the root schema instead of that subschema, unlike with an `http` `$id`
+ * Changed such a ref whose target exists only in the root schema to raise `JsonSchemaDefinitionException` at compile time, as with an `http` `$id`
+ * Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
++* Fixed `compile()` and `compile_to_code()` rewriting the `$ref` values of the schema in place, so that compiling an object again under another `$id`, or as part of another schema, used the base URI of the first compilation. A `$ref` inside the `definition` of a `JsonSchemaValueException` now shows the value as written in the schema
++* Fixed refs inside `allOf`, `anyOf`, `oneOf` and an array-form `items` ignoring the `$id` of their subschema, and an `$id` inside them not being registered
++* Changed an `id` inside `allOf`, `anyOf`, `oneOf` and an array-form `items` to set the base URI there as well, as it already does in every other subschema and in every draft (draft-06 and later don't define `id`)
++* Changed the `definition` of a `JsonSchemaValueException` to keep the `$ref`s inside arrays of other keywords as written. They were resolved at compile time, which could load them through a handler
+ 
+ === 2.22.3 (2026-11-01)
+ 
+diff --git a/fastjsonschema/generator.py b/fastjsonschema/generator.py
+index b1ea98c..809d34d 100644
+--- a/fastjsonschema/generator.py
++++ b/fastjsonschema/generator.py
+@@ -5,7 +5,7 @@ import re
+ 
+ from .exceptions import JsonSchemaValueException, JsonSchemaValuesException, JsonSchemaDefinitionException
+ from .indent import indent
+-from .ref_resolver import DATA_KEYWORDS, SCHEMA_MAPS, RefResolver
++from .ref_resolver import DATA_KEYWORDS, SCHEMA_ARRAYS, SCHEMA_MAPS, RefResolver
+ 
+ # Both mean "this subschema did not match": a subschema behind a $ref becomes its own
+ # function, which reports through JsonSchemaValuesException while errors are collected.
+@@ -324,8 +324,6 @@ class CodeGenerator:
+         self.l(msg, *args, definition=repr_default(definition), rule=repr(rule), definition_rule=definition_rule)
+ 
+     def _expand_refs(self, definition):
+-        if isinstance(definition, list):
+-            return [self._expand_refs(v) for v in definition]
+         if not isinstance(definition, dict):
+             return definition
+         if "$ref" in definition and isinstance(definition["$ref"], str):
+@@ -337,12 +335,14 @@ class CodeGenerator:
+             except ValueError:
+                 # Not a valid URI: shown as written. If the $ref is used, generate_ref() reports it.
+                 return definition
+-        # The same rules as in ref_resolver.subschemas: data stays as it is, and the
+-        # names in a map of schemas are names, not keywords.
++        # The same rules as in ref_resolver.subschemas: data stays as it is, the names in
++        # a map of schemas are names, not keywords, and only some keywords hold arrays of schemas.
+         expanded = {}
+         for key, value in definition.items():
+             if key in DATA_KEYWORDS:
+                 expanded[key] = value
++            elif key in SCHEMA_ARRAYS and isinstance(value, list):
++                expanded[key] = [self._expand_refs(sub) for sub in value]
+             elif key in SCHEMA_MAPS and isinstance(value, dict):
+                 expanded[key] = {name: self._expand_refs(sub) for name, sub in value.items()}
+             else:
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index 588d062..f9324ac 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -21,6 +21,8 @@ from .exceptions import JsonSchemaDefinitionException
+ 
+ # keywords whose values are data, not schemas
+ DATA_KEYWORDS = ('const', 'default', 'enum', 'examples')
++# keywords whose values can be arrays of schemas (`items` can also be one schema)
++SCHEMA_ARRAYS = ('allOf', 'anyOf', 'oneOf', 'items')
+ # keywords whose values map names to schemas
+ SCHEMA_MAPS = ('$defs', 'definitions', 'dependencies', 'dependentSchemas', 'patternProperties', 'properties')
+ MAX_SCHEMA_WALK_DEPTH = min(500, sys.getrecursionlimit() // 2)
+@@ -63,13 +65,17 @@ def subschemas(node: dict[str, Any]) -> Iterator[tuple[dict[str, Any], int]]:
+     Yield the subschemas of ``node`` that are objects, with how many levels below ``node`` they are.
+     """
+     for key, item in node.items():
+-        if key in DATA_KEYWORDS or not isinstance(item, dict):
++        if key in DATA_KEYWORDS:
+             continue
+-        if key in SCHEMA_MAPS:
++        if key in SCHEMA_ARRAYS and isinstance(item, list):
++            for sub in item:
++                if isinstance(sub, dict):
++                    yield sub, 2
++        elif key in SCHEMA_MAPS and isinstance(item, dict):
+             for sub in item.values():
+                 if isinstance(sub, dict):
+                     yield sub, 2
+-        else:
++        elif isinstance(item, dict):
+             yield item, 1
+ 
+ 
+diff --git a/tests/json_schema/test_draft06.py b/tests/json_schema/test_draft06.py
+index 75831b5..f399aee 100644
+--- a/tests/json_schema/test_draft06.py
++++ b/tests/json_schema/test_draft06.py
+@@ -13,9 +13,6 @@ def pytest_generate_tests(metafunc):
+             'float-overflow.json',
+             'unknownKeyword.json',
+             'date-time.json',
+-
+-            # TODO: fix ref
+-            'ref.json',
+         ],
+     )
+     metafunc.parametrize(['schema_version', 'schema', 'data', 'is_valid'], param_values, ids=param_ids)
+diff --git a/tests/json_schema/test_draft07.py b/tests/json_schema/test_draft07.py
+index e630b5a..a2a3aad 100644
+--- a/tests/json_schema/test_draft07.py
++++ b/tests/json_schema/test_draft07.py
+@@ -21,7 +21,6 @@ def pytest_generate_tests(metafunc):
+             'time.json',
+ 
+             # TODO: fix ref
+-            'ref.json',
+             'cross-draft.json',
+         ],
+     )
+diff --git a/tests/test_ref_arrays.py b/tests/test_ref_arrays.py
+new file mode 100644
+index 0000000..396c09e
+--- /dev/null
++++ b/tests/test_ref_arrays.py
+@@ -0,0 +1,155 @@
++import copy
++
++import pytest
++
++from fastjsonschema import JsonSchemaException, compile
++
++
++def refuse_handler(uri):
++    raise RuntimeError('handler called for ' + uri)
++
++
++def node_with_local_x(v, id_key='$id'):
++    return {
++        id_key: 'http://example.com/node.json',
++        'definitions': {'x': {'type': 'integer'}},
++        'properties': {'v': v},
++    }
++
++
++@pytest.mark.parametrize('schema_version, id_key', [
++    ('http://json-schema.org/draft-04/schema#', 'id'),
++    ('http://json-schema.org/draft-07/schema#', '$id'),
++])
++@pytest.mark.parametrize('v, valid, invalid', [
++    ({'allOf': [{'$ref': '#/definitions/x'}]}, 1, 'a'),
++    ({'anyOf': [{'$ref': '#/definitions/x'}]}, 1, 'a'),
++    ({'oneOf': [{'$ref': '#/definitions/x'}]}, 1, 'a'),
++    ({'items': [{'$ref': '#/definitions/x'}]}, [1], ['a']),
++    ({'allOf': [{'properties': {'w': {'$ref': '#/definitions/x'}}}]}, {'w': 1}, {'w': 'a'}),
++])
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_ref_in_schema_array_uses_id_of_its_subschema(schema_version, id_key, v, valid, invalid, fast_fail):
++    validator = compile({
++        '$schema': schema_version,
++        'definitions': {'x': {'type': 'string'}},
++        'properties': {'p': node_with_local_x(v, id_key)},
++    }, fast_fail=fast_fail)
++
++    assert validator({'p': {'v': valid}}) == {'p': {'v': valid}}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': {'v': invalid}})
++
++
++def test_id_in_schema_array_is_registered():
++    def handler(uri):
++        raise AssertionError('handler called with ' + uri)
++
++    validator = compile({
++        '$id': 'http://example.com/root.json',
++        'definitions': {'l': {'anyOf': [{'$id': 'item.json', 'type': 'integer'}, {'type': 'null'}]}},
++        'properties': {'p': {'$ref': 'item.json'}},
++    }, handlers={'http': handler})
++
++    assert validator({'p': 1}) == {'p': 1}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': 'a'})
++
++
++def test_plain_name_id_in_schema_array_is_registered():
++    validator = compile({
++        'definitions': {'l': {'allOf': [{'$id': '#int', 'type': 'integer'}]}},
++        'properties': {'p': {'$ref': '#int'}},
++    })
++
++    assert validator({'p': 1}) == {'p': 1}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': 'a'})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_boolean_schemas_next_to_ref_in_schema_array(fast_fail):
++    validator = compile({
++        '$schema': 'http://json-schema.org/draft-07/schema#',
++        'definitions': {'x': {'type': 'string'}},
++        'properties': {'p': node_with_local_x({'allOf': [True, {'$ref': '#/definitions/x'}], 'anyOf': [False, True]})},
++    }, fast_fail=fast_fail)
++
++    assert validator({'p': {'v': 1}}) == {'p': {'v': 1}}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': {'v': 'a'}})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_schema_array_shared_by_schemas_with_different_ids(fast_fail):
++    nullable = {'anyOf': [{'$ref': '#/definitions/x'}, {'type': 'null'}]}
++    first = {'$id': 'http://example.com/one.json', 'definitions': {'x': {'type': 'integer'}}, 'properties': {'p': nullable}}
++    second = {'$id': 'http://example.com/two.json', 'definitions': {'x': {'type': 'string'}}, 'properties': {'p': nullable}}
++
++    validate_first = compile(first, handlers={'http': refuse_handler}, fast_fail=fast_fail)
++    validate_second = compile(second, handlers={'http': refuse_handler}, fast_fail=fast_fail)
++
++    assert validate_first({'p': 1}) == {'p': 1}
++    assert validate_second({'p': 'a'}) == {'p': 'a'}
++    with pytest.raises(JsonSchemaException):
++        validate_second({'p': 1})
++
++
++def test_array_in_unknown_keyword_is_not_walked():
++    loaded = []
++
++    def handler(uri):
++        loaded.append(uri)
++        return {'type': 'integer'}
++
++    validator = compile({
++        '$id': 'http://example.com/root.json',
++        'x-list': [{'$id': 'item.json', 'type': 'string'}],
++        'properties': {'p': {'$ref': 'item.json'}},
++    }, handlers={'http': handler})
++
++    assert validator({'p': 1}) == {'p': 1}
++    assert loaded == ['http://example.com/item.json']
++
++
++def test_schema_array_inside_default_is_data():
++    default = {'items': [{'$ref': '#/definitions/missing'}]}
++    validator = compile({
++        '$id': 'http://example.com/root.json',
++        'properties': {'p': {'default': copy.deepcopy(default)}},
++    }, use_default=True)
++
++    assert validator({}) == {'p': default}
++
++
++def test_schema_array_inside_data_keyword_is_data():
++    value = {'allOf': [{'$ref': '#/definitions/x'}]}
++    validator = compile({
++        '$id': 'http://example.com/root.json',
++        'definitions': {'x': {'type': 'string'}},
++        'properties': {'p': {'const': copy.deepcopy(value)}},
++    })
++
++    assert validator({'p': copy.deepcopy(value)}) == {'p': value}
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_error_definition_expands_refs_only_in_schema_arrays(fast_fail):
++    def handler(uri):
++        raise AssertionError('handler called with ' + uri)
++
++    validator = compile({
++        '$schema': 'http://json-schema.org/draft-07/schema#',
++        'definitions': {'x': {'type': 'string'}},
++        'properties': {'p': node_with_local_x({
++            'type': 'object',
++            'allOf': [{'$ref': '#/definitions/x'}],
++            'x-list': [{'$ref': 'http://example.com/unknown.json'}],
++        })},
++    }, handlers={'http': handler}, fast_fail=fast_fail)
++
++    with pytest.raises(JsonSchemaException) as exc:
++        validator({'p': {'v': 1}})
++    error = exc.value if fast_fail else exc.value.errors[0]
++    assert error.definition['allOf'] == [{'type': 'integer'}]
++    assert error.definition['x-list'] == [{'$ref': 'http://example.com/unknown.json'}]
+-- 
+2.54.0 (Apple Git-157)
+

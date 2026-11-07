@@ -1,0 +1,22 @@
+embedded under definitions         valid
+loaded through handlers            valid
+fast_fail=False                    valid
+evaluated in place                 valid
+draft-04 (id)                      valid
+draft-06                           valid
+2019-09                            valid
+2020-12                            valid
+no $schema                         valid
+tag: scheme                        valid
+s3: scheme                         valid
+http: scheme (control)             invalid
+file: scheme (control)             invalid
+pointer, root defines x: 1         invalid
+pointer, root defines x: 'a'       valid
+pointer, root lacks x: 1           compile error: Unresolvable ref: definitions
+root #foo: 'a'                     invalid
+root #foo: 1                       valid
+order r,p: root #foo 'a'           invalid
+order r,p: urn: #foo 1             valid
+order p,r: root #foo 'a'           valid
+order p,r: urn: #foo 1             invalid

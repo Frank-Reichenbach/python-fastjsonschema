@@ -1,0 +1,16 @@
+[7;33m************* Module fastjsonschema[0m
+fastjsonschema/__init__.py:143:0: W0102: [35mDangerous default value {} as argument[0m ([35mdangerous-default-value[0m)
+fastjsonschema/__init__.py:143:0: W0102: [35mDangerous default value {} as argument[0m ([35mdangerous-default-value[0m)
+[7;33m************* Module fastjsonschema.draft06[0m
+fastjsonschema/draft06.py:19:4: W0102: [35mDangerous default value {} as argument[0m ([35mdangerous-default-value[0m)
+fastjsonschema/draft06.py:39:8: R1705: [1;3;35mUnnecessary "elif" after "return", replace only that "elif" with "if"[0m ([1;3;35mno-else-return[0m)
+[7;33m************* Module fastjsonschema.draft07[0m
+fastjsonschema/draft07.py:23:4: W0102: [35mDangerous default value {} as argument[0m ([35mdangerous-default-value[0m)
+[7;33m************* Module fastjsonschema.generator[0m
+fastjsonschema/generator.py:102:15: R1735: [1;3;35mConsider using '{"REGEX_PATTERNS": self._compile_regexps, "re": re, "JsonSchemaValueException": JsonSchemaValueException, ... }' instead of a call to 'dict'.[0m ([1;3;35muse-dict-literal[0m)
+fastjsonschema/generator.py:446:37: R0124: [1;3;35mRedundant comparison - value != value[0m ([1;3;35mcomparison-with-itself[0m)
+[7;33m************* Module fastjsonschema.draft04[0m
+fastjsonschema/draft04.py:44:4: W0102: [35mDangerous default value {} as argument[0m ([35mdangerous-default-value[0m)
+fastjsonschema/draft04.py:127:4: R0911: [1;3;35mToo many return statements (9/6)[0m ([1;3;35mtoo-many-return-statements[0m)
+
+

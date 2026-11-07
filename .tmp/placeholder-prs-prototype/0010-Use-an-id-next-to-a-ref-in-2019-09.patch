@@ -1,0 +1,274 @@
+From 46dfcf33cb3879b0291bf1e56064d681bba95355 Mon Sep 17 00:00:00 2001
+From: scratch <scratch@example.invalid>
+Date: Thu, 5 Nov 2026 09:07:55 +0100
+Subject: [PATCH 10/11] Use an $id next to a $ref in 2019-09
+
+---
+ fastjsonschema/__init__.py       |  9 ++-
+ fastjsonschema/draft2019.py      |  1 +
+ fastjsonschema/generator.py      |  4 +-
+ fastjsonschema/ref_resolver.py   | 24 ++++++--
+ tests/json_schema/utils.py       | 16 +++---
+ tests/test_ref_id_next_to_ref.py | 94 ++++++++++++++++++++++++++++++++
+ 6 files changed, 131 insertions(+), 17 deletions(-)
+ create mode 100644 tests/test_ref_id_next_to_ref.py
+
+diff --git a/fastjsonschema/__init__.py b/fastjsonschema/__init__.py
+index 87215ff..0a2e1dc 100644
+--- a/fastjsonschema/__init__.py
++++ b/fastjsonschema/__init__.py
+@@ -211,7 +211,7 @@ def compile(
+ 
+     Supported implementations are draft-04, draft-06 and draft-07. Which version
+     should be used is determined by `$draft` in your ``definition``. When not
+-    specified, the latest implementation is used (draft-07).
++    specified, the latest implementation is used (2019-09).
+ 
+     .. code-block:: python
+ 
+@@ -358,8 +358,11 @@ def _factory(
+     detailed_exceptions: bool = True,
+     fast_fail: bool = True,
+ ) -> tuple[RefResolver, CodeGeneratorDraft04]:
+-    resolver = RefResolver.from_schema(definition, handlers=handlers, store={})
+-    code_generator = _get_code_generator_class(definition)(
++    code_generator_class = _get_code_generator_class(definition)
++    resolver = RefResolver.from_schema(
++        definition, handlers=handlers, store={}, id_next_to_ref=code_generator_class.ID_NEXT_TO_REF,
++    )
++    code_generator = code_generator_class(
+         definition,
+         resolver=resolver,
+         formats=formats,
+diff --git a/fastjsonschema/draft2019.py b/fastjsonschema/draft2019.py
+index 85c9c12..876b0ba 100644
+--- a/fastjsonschema/draft2019.py
++++ b/fastjsonschema/draft2019.py
+@@ -2,6 +2,7 @@ from .draft07 import CodeGeneratorDraft07
+ 
+ 
+ class CodeGeneratorDraft2019(CodeGeneratorDraft07):
++    ID_NEXT_TO_REF = True
+     FORMAT_REGEXS = dict(CodeGeneratorDraft07.FORMAT_REGEXS, **{
+         'uuid': r'^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\Z',
+         # ISO 8601 duration from RFC 3339 Appendix A
+diff --git a/fastjsonschema/generator.py b/fastjsonschema/generator.py
+index 809d34d..6274bb2 100644
+--- a/fastjsonschema/generator.py
++++ b/fastjsonschema/generator.py
+@@ -33,6 +33,8 @@ class CodeGenerator:
+     """
+ 
+     INDENT = 4  # spaces
++    # Whether an $id next to a $ref counts, as in 2019-09; earlier drafts ignore it.
++    ID_NEXT_TO_REF = False
+ 
+     def __init__(self, definition, resolver=None, detailed_exceptions=True, fast_fail=True):
+         self._code = []
+@@ -69,7 +71,7 @@ class CodeGenerator:
+         self._validation_functions_done = set()
+ 
+         if resolver is None:
+-            resolver = RefResolver.from_schema(definition, store={})
++            resolver = RefResolver.from_schema(definition, store={}, id_next_to_ref=self.ID_NEXT_TO_REF)
+         self._resolver = resolver
+ 
+         # add main function to `self._needed_validation_functions`
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index f9324ac..65d2c01 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -154,6 +154,7 @@ class RefResolver:
+         handlers: Mapping[str, Callable[[str], Any]] = {},
+         *,
+         base_uri_is_id: bool = False,
++        id_next_to_ref: bool = False,
+     ) -> None:
+         """
+         `base_uri` is URI of the referring document from the `schema`.
+@@ -161,6 +162,7 @@ class RefResolver:
+         (if `cache=True`).
+         `base_uri_is_id` says that `base_uri` is already the `$id` of the `schema`,
+         as `from_schema` sets it, so that the `$id` isn't applied to it again.
++        `id_next_to_ref` says that an `$id` next to a `$ref` counts, as in 2019-09.
+ 
+         Please notice that you can have caching problems when compiling schemas
+         with colliding `$ref`. To force overwriting use `cache=False` or
+@@ -184,6 +186,7 @@ class RefResolver:
+         # stays unchanged: its objects can be part of other schemas with other base URIs.
+         # Holding the object keeps its id from being reused while the resolver exists.
+         self._resolved_refs: dict[int, tuple[dict[str, Any], str]] = {}
++        self._id_next_to_ref = id_next_to_ref
+         self.walk(schema, id_applied=base_uri_is_id)
+ 
+     @classmethod
+@@ -308,19 +311,28 @@ class RefResolver:
+ 
+         if isinstance(node, bool):
+             return
+-        if '$ref' in node and isinstance(node['$ref'], str):
+-            self._resolve_ref(node)
+-            return
+ 
+-        has_id = ('$id' in node or 'id' in node) and isinstance(get_id(node), str)
++        has_ref = '$ref' in node and isinstance(node['$ref'], str)
++        if has_ref:
++            # Draft-04 to draft-07 ignore every keyword next to a $ref. In 2019-09, $id counts
++            # there: it identifies the object and is the base URI of the $ref. (id isn't a keyword.)
++            node_id = node.get('$id') if self._id_next_to_ref else None
++            has_id = isinstance(node_id, str) and bool(node_id)
++        else:
++            node_id = get_id(node)
++            has_id = ('$id' in node or 'id' in node) and isinstance(node_id, str)
++
+         # As in 2.22.3 and jsonschema, the $id of a loaded document doesn't change its base URI.
+         enters_scope = has_id and not loaded
+-        with self.in_scope(get_id(node), resolved=id_applied) if enters_scope else contextlib.nullcontext():
++        with self.in_scope(node_id, resolved=id_applied) if enters_scope else contextlib.nullcontext():
+             if has_id:
+-                uri = self.resolution_scope if enters_scope else join_uri(self.resolution_scope, get_id(node))
++                uri = self.resolution_scope if enters_scope else join_uri(self.resolution_scope, node_id)
+                 self.store[normalize(uri)] = node
+                 # A $ref to this $id resolves to this node, which must not be walked again.
+                 self._walked[id(node)] = node
++            if has_ref:
++                self._resolve_ref(node)
++                return
+             # The loop stays here: each level of the schema takes one stack frame, so the depth
+             # limit raises JsonSchemaDefinitionException before Python's recursion limit.
+             for sub, levels in subschemas(node):
+diff --git a/tests/json_schema/utils.py b/tests/json_schema/utils.py
+index 4f2dd79..eb2eb29 100644
+--- a/tests/json_schema/utils.py
++++ b/tests/json_schema/utils.py
+@@ -111,18 +111,20 @@ def template_test(schema_version, schema, data, is_valid):
+     Test function to be used (imported) in final test file to run the tests
+     which are generated by `pytest_generate_tests` hook.
+     """
+-    # For debug purposes. When test fails, it will print stdout.
+-    resolver = RefResolver.from_schema(schema, handlers=SCHEMA_HANDLERS)
+-
+-    debug_generator = _get_code_generator_class(schema_version)(schema, resolver=resolver)
+-    print(debug_generator.global_state_code)
+-    print(debug_generator.func_code)
+-
+     # JSON schema test suits do not contain schema version.
+     # Our library needs to know that or it would use always the latest implementation.
+     if isinstance(schema, dict):
+         schema.setdefault('$schema', schema_version)
+ 
++    # For debug purposes. When test fails, it will print stdout.
++    debug_generator_class = _get_code_generator_class(schema)
++    resolver = RefResolver.from_schema(
++        schema, handlers=SCHEMA_HANDLERS, id_next_to_ref=debug_generator_class.ID_NEXT_TO_REF,
++    )
++    debug_generator = debug_generator_class(schema, resolver=resolver)
++    print(debug_generator.global_state_code)
++    print(debug_generator.func_code)
++
+     for fast_fail in (True, False):
+         validate = compile(schema, handlers=SCHEMA_HANDLERS, fast_fail=fast_fail)
+         try:
+diff --git a/tests/test_ref_id_next_to_ref.py b/tests/test_ref_id_next_to_ref.py
+new file mode 100644
+index 0000000..6d3623f
+--- /dev/null
++++ b/tests/test_ref_id_next_to_ref.py
+@@ -0,0 +1,94 @@
++import pytest
++
++from fastjsonschema import JsonSchemaDefinitionException, JsonSchemaException, RefResolver, compile
++from fastjsonschema.draft07 import CodeGeneratorDraft07
++from fastjsonschema.draft2019 import CodeGeneratorDraft2019
++
++
++@pytest.mark.parametrize('schema_version, expected_loaded', [
++    ('https://json-schema.org/draft/2019-09/schema', 'http://example.com/sub/item.json'),
++    (None, 'http://example.com/sub/item.json'),
++    ('http://json-schema.org/draft-07/schema#', 'http://example.com/item.json'),
++    ('http://json-schema.org/draft-06/schema#', 'http://example.com/item.json'),
++])
++def test_id_next_to_ref_is_the_base_uri_of_the_ref_in_2019_09(schema_version, expected_loaded):
++    loaded = []
++
++    def handler(uri):
++        loaded.append(uri)
++        return {'type': 'integer'}
++
++    schema = {
++        '$id': 'http://example.com/root.json',
++        'properties': {'p': {'$id': 'http://example.com/sub/', '$ref': 'item.json'}},
++    }
++    if schema_version:
++        schema['$schema'] = schema_version
++    validator = compile(schema, handlers={'http': handler})
++
++    assert validator({'p': 1}) == {'p': 1}
++    assert loaded == [expected_loaded]
++
++
++def test_ref_next_to_id_cannot_point_into_the_outer_schema_in_2019_09():
++    with pytest.raises(JsonSchemaDefinitionException):
++        compile({
++            '$id': 'http://example.com/root.json',
++            'definitions': {'y': {'type': 'string'}},
++            'properties': {'p': {'$id': 'http://example.com/other.json', '$ref': '#/definitions/y'}},
++        }, handlers={'http': lambda uri: {}})
++
++
++def test_id_next_to_ref_is_ignored():
++    validator = compile({
++        '$schema': 'http://json-schema.org/draft-07/schema#',
++        '$id': 'http://example.com/root.json',
++        'definitions': {'y': {'type': 'string'}},
++        'properties': {'b': {'$id': 'http://example.com/other.json', '$ref': '#/definitions/y'}},
++    })
++
++    assert validator({'b': 'x'}) == {'b': 'x'}
++    with pytest.raises(JsonSchemaException):
++        validator({'b': 1})
++
++
++@pytest.mark.parametrize('schema_version, expected_loaded', [
++    # 2019-09: id is an unknown keyword and doesn't change the base URI of the $ref next to it.
++    (None, ['http://example.com/thing.json']),
++    # draft-04: id next to a $ref is ignored, as every keyword next to a $ref.
++    ('http://json-schema.org/draft-04/schema#', ['http://example.com/thing.json']),
++])
++def test_draft_04_id_next_to_ref(schema_version, expected_loaded):
++    loaded = []
++
++    def handler(uri):
++        loaded.append(uri)
++        return {}
++
++    schema = {'id': 'http://example.com/root.json', 'properties': {'a': {'id': 'sub/a.json', '$ref': 'thing.json'}}}
++    if schema_version:
++        schema['$schema'] = schema_version
++    compile(schema, handlers={'http': handler})
++
++    assert loaded == expected_loaded
++
++
++@pytest.mark.parametrize('code_generator_class, expected_loaded', [
++    (CodeGeneratorDraft07, 'http://example.com/foo.json'),
++    (CodeGeneratorDraft2019, 'http://example.com/sub/foo.json'),
++])
++def test_code_generator_tells_resolver_its_draft(code_generator_class, expected_loaded):
++    loaded = []
++
++    def handler(uri):
++        loaded.append(uri)
++        return {'type': 'integer'}
++
++    # No $schema: the draft of the code generator decides, not the default of RefResolver.
++    schema = {'$id': 'http://example.com/root.json', 'properties': {'a': {'$id': 'sub/a.json', '$ref': 'foo.json'}}}
++    resolver = RefResolver.from_schema(schema, handlers={'http': handler}, store={},
++                                       id_next_to_ref=code_generator_class.ID_NEXT_TO_REF)
++    code_generator = code_generator_class(schema, resolver=resolver)
++    code_generator.func_code  # pylint: disable=pointless-statement
++
++    assert loaded == [expected_loaded]
+-- 
+2.54.0 (Apple Git-157)
+

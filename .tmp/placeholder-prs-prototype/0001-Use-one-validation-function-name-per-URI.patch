@@ -1,0 +1,213 @@
+From cd2522e304dc917941f4f3497bf74a87d25731a7 Mon Sep 17 00:00:00 2001
+From: scratch <scratch@example.invalid>
+Date: Thu, 5 Nov 2026 09:07:54 +0100
+Subject: [PATCH 01/11] Use one validation function name per URI
+
+---
+ CHANGELOG.txt                  |   2 +
+ fastjsonschema/ref_resolver.py |  22 ++++--
+ tests/test_ref_names.py        | 125 +++++++++++++++++++++++++++++++++
+ 3 files changed, 143 insertions(+), 6 deletions(-)
+ create mode 100644 tests/test_ref_names.py
+
+diff --git a/CHANGELOG.txt b/CHANGELOG.txt
+index dd8f8fd..98ea429 100644
+--- a/CHANGELOG.txt
++++ b/CHANGELOG.txt
+@@ -1,5 +1,7 @@
+ === UNRELEASED
+ 
++* Fixed two refs whose targets differ only in case or punctuation (such as `#/definitions/user-id` and `#/definitions/user_id`) calling the same generated function, so that a `$ref` validated against the wrong schema, and `compile()` could return the validator of a referenced schema instead of the whole schema
++* Fixed `NameError` during validation and `ValueError` at compile time for two spellings of one URI, such as `?#/definitions/ab` and `#/definitions/ab`
+ * Fixed `$` in `patternProperties` matching before a trailing newline, which also made a `pattern` with the same regex accept a trailing newline
+ 
+ === 2.22.3 (2026-11-01)
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index 67fcbdd..b0b0b29 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -76,6 +76,7 @@ def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> An
+     return result
+ 
+ 
++# pylint: disable=too-many-instance-attributes
+ class RefResolver:
+     """
+     Resolve JSON References.
+@@ -106,6 +107,9 @@ class RefResolver:
+         self.cache = cache
+         self.handlers = handlers
+         self._walked_uris: set[str] = set()
++        # The function name of each URI, and how many URIs share each name before it is made unique.
++        self._scope_names: dict[str, str] = {}
++        self._scope_name_counts: dict[str, int] = {}
+         self.walk(schema)
+         self._walked_uris.add(normalize(base_uri) if base_uri else '')
+ 
+@@ -151,7 +155,7 @@ class RefResolver:
+ 
+         if uri and normalize(uri) in self.store:
+             schema = self.store[normalize(uri)]
+-        elif not uri or uri == self.base_uri:
++        elif not normalize(uri) or normalize(uri) == normalize(self.base_uri):
+             schema = self.schema
+         else:
+             schema = resolve_remote(uri, self.handlers)
+@@ -185,12 +189,18 @@ class RefResolver:
+ 
+     def get_scope_name(self) -> str:
+         """
+-        Get current scope and return it as a valid function name.
++        Get current scope and return it as a valid function name: one name per URI, and different
++        URIs get different names.
+         """
+-        name = 'validate_' + unquote(self.resolution_scope).replace('~1', '_').replace('~0', '_').replace('"', '')
+-        name = re.sub(r'($[^a-zA-Z]|[^a-zA-Z0-9])', '_', name)
+-        name = name.lower().rstrip('_')
+-        return name
++        uri = self.get_uri()
++        if uri not in self._scope_names:
++            name = 'validate_' + unquote(self.resolution_scope).replace('~1', '_').replace('~0', '_').replace('"', '')
++            name = re.sub(r'($[^a-zA-Z]|[^a-zA-Z0-9])', '_', name)
++            name = name.lower().rstrip('_')
++            count = self._scope_name_counts[name] = self._scope_name_counts.get(name, 0) + 1
++            # A sanitized name never ends in "_", so a suffixed name is never the name of another URI.
++            self._scope_names[uri] = name if count == 1 else '{}_{}_'.format(name, count)
++        return self._scope_names[uri]
+ 
+     def walk(self, node: dict[str, Any] | bool, depth: int = 0, rewrite_refs: bool = True) -> None:
+         """
+diff --git a/tests/test_ref_names.py b/tests/test_ref_names.py
+new file mode 100644
+index 0000000..443056a
+--- /dev/null
++++ b/tests/test_ref_names.py
+@@ -0,0 +1,125 @@
++from urllib.parse import quote
++
++import pytest
++
++from fastjsonschema import JsonSchemaException, JsonSchemaValueException, compile, compile_to_code
++from fastjsonschema.ref_resolver import RefResolver
++
++
++def definition_pointer(key):
++    return '#/definitions/' + quote(key.replace('~', '~0').replace('/', '~1'))
++
++
++@pytest.mark.parametrize('integer_key, string_key', [
++    ('Address', 'address'),
++    ('user-id', 'user_id'),
++    ('a/b', 'a_b'),
++    ('größe', 'grüße'),
++    ('id', 'id_'),
++])
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_refs_to_definitions_with_same_function_name(integer_key, string_key, fast_fail):
++    validator = compile({
++        'definitions': {integer_key: {'type': 'integer'}, string_key: {'type': 'string'}},
++        'properties': {
++            'a': {'$ref': definition_pointer(integer_key)},
++            'b': {'$ref': definition_pointer(string_key)},
++        },
++    }, fast_fail=fast_fail)
++
++    assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
++    with pytest.raises(JsonSchemaException):
++        validator({'a': 'x'})
++    with pytest.raises(JsonSchemaException):
++        validator({'b': 1})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_refs_to_ids_with_same_function_name(fast_fail):
++    validator = compile({
++        'definitions': {
++            'i': {'$id': 'http://example.com/user-id.json', 'type': 'integer'},
++            's': {'$id': 'http://example.com/user_id.json', 'type': 'string'},
++        },
++        'properties': {
++            'a': {'$ref': 'http://example.com/user-id.json'},
++            'b': {'$ref': 'http://example.com/user_id.json'},
++        },
++    }, fast_fail=fast_fail)
++
++    assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
++    with pytest.raises(JsonSchemaException):
++        validator({'b': 1})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_ref_changed_by_normalization_and_its_normalized_form_use_one_function(fast_fail):
++    validator = compile({
++        'definitions': {'ab': {'type': 'integer'}},
++        'properties': {'x': {'$ref': '?#/definitions/ab'}, 'y': {'$ref': '#/definitions/ab'}},
++    }, fast_fail=fast_fail)
++
++    assert validator({'x': 1, 'y': 1}) == {'x': 1, 'y': 1}
++    with pytest.raises(JsonSchemaException):
++        validator({'x': 'a'})
++
++
++def string_handler(uri):
++    return {'type': 'string'}
++
++
++@pytest.mark.parametrize('schema', [
++    # '#/-' and the root both get the name "validate"
++    {'-': {'type': 'string'}, 'type': 'object', 'properties': {'a': {'$ref': '#/-'}}},
++    # the root $id and the loaded schema both get the name "validate_http___example_com_a_b_json"
++    {'$id': 'http://example.com/a-b.json', 'type': 'object', 'properties': {'a': {'$ref': 'http://example.com/a_b.json'}}},
++], ids=['local', 'handler'])
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_ref_with_function_name_of_root_does_not_replace_root(schema, fast_fail):
++    validator = compile(schema, handlers={'http': string_handler}, fast_fail=fast_fail)
++
++    assert validator({'a': 'x'}) == {'a': 'x'}
++    with pytest.raises(JsonSchemaException) as exc:
++        validator({'a': 1})
++    assert 'data.a must be string' in str(exc.value)
++    with pytest.raises(JsonSchemaException):
++        validator('x')
++
++
++def test_ref_with_empty_query_in_schema_with_a_keyword():
++    validator = compile({
++        'type': 'object',
++        'definitions': {'ab': {'type': 'integer'}},
++        'properties': {'a': {'$ref': '?#/definitions/ab'}, 'b': {'$ref': '#/definitions/ab'}},
++    })
++
++    assert validator({'a': 1, 'b': 2}) == {'a': 1, 'b': 2}
++    with pytest.raises(JsonSchemaValueException):
++        validator({'a': 'x'})
++
++
++def test_names_of_uris_that_do_not_collide_stay_as_they_are():
++    resolver = RefResolver.from_schema({})
++    with resolver.in_scope('#/definitions/a-b'):
++        first = resolver.get_scope_name()
++    with resolver.in_scope('#/definitions/a_b'):
++        second = resolver.get_scope_name()
++    with resolver.in_scope('#/definitions/a_b_2'):
++        third = resolver.get_scope_name()
++    with resolver.in_scope('#/definitions/a-b'):
++        again = resolver.get_scope_name()
++
++    assert first == again == 'validate___definitions_a_b'
++    assert second == 'validate___definitions_a_b_2_'
++    assert third == 'validate___definitions_a_b_2'
++
++
++def test_compile_to_code_uses_the_unique_names():
++    code = compile_to_code({
++        'definitions': {'user-id': {'type': 'integer'}, 'user_id': {'type': 'string'}},
++        'properties': {'a': {'$ref': '#/definitions/user-id'}, 'b': {'$ref': '#/definitions/user_id'}},
++    })
++    namespace = {}
++    exec(code, namespace)
++
++    assert namespace['validate']({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
+-- 
+2.54.0 (Apple Git-157)
+

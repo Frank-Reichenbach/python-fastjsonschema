@@ -1,0 +1,93 @@
+From 2e7dd19ae8d88895b45dcfa3929649fb20a7b913 Mon Sep 17 00:00:00 2001
+From: scratch <scratch@example.invalid>
+Date: Thu, 5 Nov 2026 09:07:54 +0100
+Subject: [PATCH 03/11] Ignore a $ref that is not a valid URI in an unknown
+ keyword
+
+---
+ CHANGELOG.txt                  |  1 +
+ fastjsonschema/generator.py    | 10 ++++++++--
+ fastjsonschema/ref_resolver.py |  5 +++--
+ tests/test_ref_invalid_uri.py  | 22 ++++++++++++++++++++++
+ 4 files changed, 34 insertions(+), 4 deletions(-)
+ create mode 100644 tests/test_ref_invalid_uri.py
+
+diff --git a/CHANGELOG.txt b/CHANGELOG.txt
+index d74fb83..afd08a2 100644
+--- a/CHANGELOG.txt
++++ b/CHANGELOG.txt
+@@ -1,5 +1,6 @@
+ === UNRELEASED
+ 
++* Fixed `compile()` failing with `ValueError` for a `$ref` that isn't a valid URI inside the value of an unknown keyword, such as `{"x-note": {"$ref": "http://[bad"}}`, in a schema with an `$id`
+ * Fixed JSON pointers with an empty key, such as `#/` and `#//child`: leading empty keys were dropped, so `#/` meant the whole document
+ * Fixed two refs whose targets differ only in case or punctuation (such as `#/definitions/user-id` and `#/definitions/user_id`) calling the same generated function, so that a `$ref` validated against the wrong schema, and `compile()` could return the validator of a referenced schema instead of the whole schema
+ * Fixed `NameError` during validation and `ValueError` at compile time for two spellings of one URI, such as `?#/definitions/ab` and `#/definitions/ab`
+diff --git a/fastjsonschema/generator.py b/fastjsonschema/generator.py
+index 951edda..649ed31 100644
+--- a/fastjsonschema/generator.py
++++ b/fastjsonschema/generator.py
+@@ -329,8 +329,14 @@ class CodeGenerator:
+         if not isinstance(definition, dict):
+             return definition
+         if "$ref" in definition and isinstance(definition["$ref"], str):
+-            with self._resolver.resolving(definition["$ref"]) as schema:
+-                return schema
++            try:
++                with self._resolver.resolving(definition["$ref"]) as schema:
++                    return schema
++            except JsonSchemaDefinitionException:
++                raise
++            except ValueError:
++                # Not a valid URI: shown as written. If the $ref is used, generate_ref() reports it.
++                return definition
+         return {k: self._expand_refs(v) for k, v in definition.items()}
+ 
+     def _is_variable_in_scope(self, variable_name):
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index 84e80d1..08962fb 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -217,8 +217,9 @@ class RefResolver:
+             pass
+         elif '$ref' in node and isinstance(node['$ref'], str):
+             if rewrite_refs:
+-                ref = node['$ref']
+-                node['$ref'] = urlparse.urljoin(self.resolution_scope, ref)
++                # A $ref that isn't a valid URI stays as it is. If it is used, the generator reports it.
++                with contextlib.suppress(ValueError):
++                    node['$ref'] = urlparse.urljoin(self.resolution_scope, node['$ref'])
+         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
+             with self.in_scope(get_id(node)):
+                 self.store[normalize(self.resolution_scope)] = node
+diff --git a/tests/test_ref_invalid_uri.py b/tests/test_ref_invalid_uri.py
+new file mode 100644
+index 0000000..5931d98
+--- /dev/null
++++ b/tests/test_ref_invalid_uri.py
+@@ -0,0 +1,22 @@
++import pytest
++
++from fastjsonschema import JsonSchemaDefinitionException, compile
++
++
++@pytest.mark.parametrize('schema', [
++    {'$id': 'http://example.com/a.json', 'x-note': {'$ref': 'http://[bad'}},
++    {'$id': 'http://example.com/a.json', 'type': 'object', 'x-note': {'$ref': 'http://[bad'}},
++    {'type': 'object', 'x-note': {'$ref': 'http://[bad'}},
++])
++def test_invalid_uri_in_unknown_keyword_is_ignored(schema):
++    assert compile(schema)({}) == {}
++
++
++def test_invalid_uri_in_a_used_ref_still_fails():
++    with pytest.raises(ValueError):
++        compile({'$id': 'http://example.com/a.json', 'properties': {'a': {'$ref': 'http://[bad'}}})
++
++
++def test_unresolvable_ref_in_unknown_keyword_still_fails():
++    with pytest.raises(JsonSchemaDefinitionException):
++        compile({'type': 'object', 'x-note': {'$ref': '#/nope'}})
+-- 
+2.54.0 (Apple Git-157)
+

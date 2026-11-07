@@ -1,0 +1,22 @@
+embedded under definitions         invalid
+loaded through handlers            invalid
+fast_fail=False                    invalid
+evaluated in place                 invalid
+draft-04 (id)                      invalid
+draft-06                           invalid
+2019-09                            invalid
+2020-12                            invalid
+no $schema                         invalid
+tag: scheme                        invalid
+s3: scheme                         invalid
+http: scheme (control)             invalid
+file: scheme (control)             invalid
+pointer, root defines x: 1         valid
+pointer, root defines x: 'a'       invalid
+pointer, root lacks x: 1           valid
+root #foo: 'a'                     valid
+root #foo: 1                       invalid
+order r,p: root #foo 'a'           valid
+order r,p: urn: #foo 1             valid
+order p,r: root #foo 'a'           valid
+order p,r: urn: #foo 1             valid

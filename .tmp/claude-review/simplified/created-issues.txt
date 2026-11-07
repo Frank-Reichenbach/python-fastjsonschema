@@ -1,0 +1,7 @@
+6 https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/17
+15 https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/18
+1 https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/19
+4 https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/20
+7 https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/21
+5 https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/22
+13 https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/23

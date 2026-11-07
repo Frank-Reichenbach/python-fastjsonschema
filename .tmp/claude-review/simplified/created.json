@@ -1,0 +1,50 @@
+{
+  "numbers": {
+    "I_DATA": 17,
+    "I_UNCHANGED": 18,
+    "I_URN": 19,
+    "I_ARRAYS": 20,
+    "I_REL": 21,
+    "I_HANDLER": 22,
+    "I_SIB": 23,
+    "META": 24,
+    "P_DATA": 25,
+    "P_UNCHANGED": 26,
+    "P_URN": 27,
+    "P_ARRAYS": 28,
+    "P_REL": 29,
+    "P_HANDLER": 30,
+    "P_SIB": 31
+  },
+  "prs": [
+    [
+      "P_DATA",
+      "https://github.com/Frank-Reichenbach/python-fastjsonschema/pull/25"
+    ],
+    [
+      "P_UNCHANGED",
+      "https://github.com/Frank-Reichenbach/python-fastjsonschema/pull/26"
+    ],
+    [
+      "P_URN",
+      "https://github.com/Frank-Reichenbach/python-fastjsonschema/pull/27"
+    ],
+    [
+      "P_ARRAYS",
+      "https://github.com/Frank-Reichenbach/python-fastjsonschema/pull/28"
+    ],
+    [
+      "P_REL",
+      "https://github.com/Frank-Reichenbach/python-fastjsonschema/pull/29"
+    ],
+    [
+      "P_HANDLER",
+      "https://github.com/Frank-Reichenbach/python-fastjsonschema/pull/30"
+    ],
+    [
+      "P_SIB",
+      "https://github.com/Frank-Reichenbach/python-fastjsonschema/pull/31"
+    ]
+  ],
+  "meta": "https://github.com/Frank-Reichenbach/python-fastjsonschema/issues/24"
+}

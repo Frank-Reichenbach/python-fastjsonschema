@@ -1,0 +1,285 @@
+From 464a32a9275bd819166a5024b64de166ed81f60a Mon Sep 17 00:00:00 2001
+From: Frank Reichenbach <frank.w.reichenbach@web.de>
+Date: Tue, 3 Nov 2026 14:16:44 +0100
+Subject: [PATCH 05/11] Resolve local refs inside a subschema with a urn: $id
+
+Inside a subschema whose $id uses a scheme such as urn:, local refs
+("#", "#/definitions/...") and plain-name $ids ("#foo") resolved
+against the root schema. Validation then accepted invalid data,
+rejected valid data, or failed to compile the schema.
+
+The cause is urllib.parse.urljoin. It returns a relative reference
+unchanged when the scheme of the base URI is not in
+urllib.parse.uses_relative, for example urn:, tag: or s3:.
+
+Add join_uri(). For a ref that starts with "#" and a base URI with
+such a scheme, it keeps the base URI and replaces its fragment, as
+RFC 3986 section 5.2.2 defines. Everything else still goes through
+urljoin, so the result for http:, https:, file: and a schema without
+$id doesn't change. All four urljoin calls in ref_resolver.py now use
+join_uri().
+
+Such refs now resolve as they do with an http: $id. That changes two
+results that don't depend on the data:
+
+- A schema whose ref inside such a subschema has its target only in
+  the root schema compiled before and used that target. It now raises
+  JsonSchemaDefinitionException.
+- For a schema whose root $id uses such a scheme, compile_to_code()
+  names the functions for "#/..." and "#foo" refs after the root $id.
+  If the schema contains "$ref": "#", it no longer generates a second
+  copy of the root function named validate.
+
+Reverting the first call in resolving() alone changes no test result.
+It uses join_uri() too, so that every URI built from a ref goes through
+the same helper.
+
+The tests are in tests/test_ref_urn.py. test_join_uri tests join_uri()
+directly, for urn:, tag: and http: bases.
+---
+ CHANGELOG.txt                  |   3 +
+ fastjsonschema/ref_resolver.py |  27 +++++-
+ tests/test_ref_urn.py          | 151 +++++++++++++++++++++++++++++++++
+ 3 files changed, 177 insertions(+), 4 deletions(-)
+ create mode 100644 tests/test_ref_urn.py
+
+diff --git a/CHANGELOG.txt b/CHANGELOG.txt
+index 39e32b6..33146c6 100644
+--- a/CHANGELOG.txt
++++ b/CHANGELOG.txt
+@@ -6,6 +6,9 @@
+ * Fixed `NameError` during validation and `ValueError` at compile time for two spellings of one URI, such as `?#/definitions/ab` and `#/definitions/ab`
+ * Fixed `$` in `patternProperties` matching before a trailing newline, which also made a `pattern` with the same regex accept a trailing newline
+ * Fixed `$ref` and `$id` inside the values of `const`, `enum`, `default` and `examples` being treated as part of the schema, which could make `compile()` fail, change those values or replace another subschema with the same `$id`. Such an `$id`, or one in an entry named like these keywords inside a custom keyword (such as `x-defs`), is no longer registered, so a `$ref` to it is loaded through the handlers like any other URI
++* Fixed refs starting with `#` (`#`, `#/definitions/...`, plain names like `#foo`) inside a subschema whose `$id` has a scheme such as `urn:` resolving against the root schema instead of that subschema, unlike with an `http` `$id`
++* Changed such a ref whose target exists only in the root schema to raise `JsonSchemaDefinitionException` at compile time, as with an `http` `$id`
++* Changed the names of the functions generated for refs starting with `#` when the root `$id` has such a scheme (visible in `compile_to_code()`)
+ 
+ === 2.22.3 (2026-11-01)
+ 
+diff --git a/fastjsonschema/ref_resolver.py b/fastjsonschema/ref_resolver.py
+index ce2de0f..0b7d598 100644
+--- a/fastjsonschema/ref_resolver.py
++++ b/fastjsonschema/ref_resolver.py
+@@ -73,6 +73,25 @@ def subschemas(node: dict[str, Any]) -> Iterator[tuple[dict[str, Any], int]]:
+             yield item, 1
+ 
+ 
++def join_uri(base: str, ref: str) -> str:
++    """
++    Resolve ``ref`` against ``base`` with ``urljoin``.
++
++    ``urljoin`` returns a fragment-only ``ref`` (``#...``) unchanged when the scheme of
++    ``base`` is not in ``urllib.parse.uses_relative``, for example ``urn:``. For such
++    a ``ref``, keep ``base`` and replace its fragment instead, as defined in
++    https://tools.ietf.org/html/rfc3986#section-5.2.2. The fragment is everything
++    after the first ``#``.
++    """
++    if ref.startswith('#'):
++        # Only for schemes that urljoin doesn't handle. For the others, keep urljoin's result as it was:
++        # urljoin also normalizes the URI, for example it lowercases the scheme.
++        if urlparse.urlsplit(base).scheme not in urlparse.uses_relative:
++            # Not urldefrag: it normalizes the URI only when it has a fragment, differently per Python version.
++            return base.partition('#')[0] + ref
++    return urlparse.urljoin(base, ref)
++
++
+ def resolve_remote(uri: str, handlers: Mapping[str, Callable[[str], Any]]) -> Any:
+     """
+     Resolve a remote ``uri``.
+@@ -157,7 +176,7 @@ class RefResolver:
+         Context manager to handle current scope.
+         """
+         old_scope = self.resolution_scope
+-        self.resolution_scope = urlparse.urljoin(old_scope, scope)
++        self.resolution_scope = join_uri(old_scope, scope)
+         try:
+             yield
+         finally:
+@@ -169,7 +188,7 @@ class RefResolver:
+         Context manager which resolves a JSON ``ref`` and enters the
+         resolution scope of this ref.
+         """
+-        new_uri = urlparse.urljoin(self.resolution_scope, ref)
++        new_uri = join_uri(self.resolution_scope, ref)
+         uri, fragment = urlparse.urldefrag(new_uri)
+ 
+         document_uri = uri or self.base_uri
+@@ -189,7 +208,7 @@ class RefResolver:
+             with self.in_scope(document_uri):
+                 self._ensure_walked(document_uri, schema)
+                 if fragment and not fragment.startswith('/'):
+-                    plain_name = normalize(urlparse.urljoin(document_uri, '#' + fragment))
++                    plain_name = normalize(join_uri(document_uri, '#' + fragment))
+                     if plain_name in self.store:
+                         yield self.store[plain_name]
+                         return
+@@ -238,7 +257,7 @@ class RefResolver:
+             if rewrite_refs:
+                 # A $ref that isn't a valid URI stays as it is. If it is used, the generator reports it.
+                 with contextlib.suppress(ValueError):
+-                    node['$ref'] = urlparse.urljoin(self.resolution_scope, node['$ref'])
++                    node['$ref'] = join_uri(self.resolution_scope, node['$ref'])
+         elif ('$id' in node or 'id' in node) and isinstance(get_id(node), str):
+             with self.in_scope(get_id(node)):
+                 self.store[normalize(self.resolution_scope)] = node
+diff --git a/tests/test_ref_urn.py b/tests/test_ref_urn.py
+new file mode 100644
+index 0000000..ba6f6f6
+--- /dev/null
++++ b/tests/test_ref_urn.py
+@@ -0,0 +1,151 @@
++import copy
++import re
++
++import pytest
++
++from fastjsonschema import JsonSchemaDefinitionException, JsonSchemaException, compile, compile_to_code
++from fastjsonschema.ref_resolver import join_uri
++
++
++URN_NODE = {
++    '$id': 'urn:example:node',
++    'type': 'object',
++    'properties': {
++        'all': {'type': 'array', 'items': {'$ref': '#'}},
++        'eq': {'type': 'array', 'maxItems': 2},
++    },
++    'additionalProperties': False,
++}
++
++
++@pytest.mark.parametrize('schema, handlers', [
++    ({'properties': {'p': {'$ref': 'urn:example:node'}}, 'definitions': {'node': URN_NODE}}, {}),
++    ({'properties': {'p': {'$ref': 'urn:example:node'}}}, {'urn': lambda uri: copy.deepcopy(URN_NODE)}),
++    ({'properties': {'p': URN_NODE}}, {}),
++])
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_local_ref_in_subschema_with_urn_id(schema, handlers, fast_fail):
++    # Copy, because the test cases share URN_NODE.
++    validator = compile(copy.deepcopy(schema), handlers=handlers, fast_fail=fast_fail)
++
++    assert validator({'p': {'all': [{'eq': [1, 2]}]}}) == {'p': {'all': [{'eq': [1, 2]}]}}
++    with pytest.raises(JsonSchemaException) as exc:
++        validator({'p': {'all': [{'eq': [1, 2, 3]}]}})
++    errors = [exc.value] if fast_fail else exc.value.errors
++    assert errors[0].name == 'data.p.all[0].eq'
++
++
++@pytest.mark.parametrize('id_keyword, node_id, schema_uri', [
++    ('$id', 'tag:example.com,2026:node', None),
++    ('$id', 'URN:Example:Node', None),
++    ('$id', 's3://bucket/node.json', None),
++    ('$id', 'urn:example:node#', 'http://json-schema.org/draft-06/schema#'),
++    ('id', 'urn:example:node', 'http://json-schema.org/draft-04/schema#'),
++])
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_local_ref_in_subschema_with_other_id_outside_uses_relative(id_keyword, node_id, schema_uri, fast_fail):
++    node = {key: value for key, value in copy.deepcopy(URN_NODE).items() if key != '$id'}
++    node[id_keyword] = node_id
++    schema = {'properties': {'p': node}}
++    if schema_uri:
++        schema['$schema'] = schema_uri
++    validator = compile(schema, fast_fail=fast_fail)
++
++    assert validator({'p': {'all': [{'eq': [1, 2]}]}}) == {'p': {'all': [{'eq': [1, 2]}]}}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': {'all': [{'eq': [1, 2, 3]}]}})
++
++
++def test_ref_to_root_under_root_urn_id_uses_root_function():
++    code = compile_to_code({'$id': 'urn:example:root', 'properties': {'a': {'$ref': '#'}}})
++
++    assert re.findall(r'^def (\w+)', code, re.M) == ['validate_urn_example_root']
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_json_pointer_ref_in_subschema_with_urn_id(fast_fail):
++    validator = compile({
++        'definitions': {'x': {'type': 'string'}},
++        'properties': {'p': {
++            '$id': 'urn:example:item',
++            'definitions': {'x': {'type': 'integer'}},
++            'properties': {'v': {'$ref': '#/definitions/x'}},
++        }},
++    }, fast_fail=fast_fail)
++
++    assert validator({'p': {'v': 1}}) == {'p': {'v': 1}}
++    with pytest.raises(JsonSchemaException):
++        validator({'p': {'v': 'a'}})
++
++
++def test_json_pointer_ref_in_subschema_with_urn_id_does_not_fall_back_to_root():
++    with pytest.raises(JsonSchemaDefinitionException):
++        compile({
++            'definitions': {'x': {'type': 'string'}},
++            'properties': {'p': {
++                '$id': 'urn:example:item',
++                'properties': {'v': {'$ref': '#/definitions/x'}},
++            }},
++        })
++
++
++@pytest.mark.parametrize('base, ref, expected', [
++    ('urn:example:node', '#/definitions/x', 'urn:example:node#/definitions/x'),
++    ('urn:example:node#/a', '#foo', 'urn:example:node#foo'),
++    ('urn:example:node#/a', '#', 'urn:example:node#'),
++    ('tag:example.com,2026:node', '#foo', 'tag:example.com,2026:node#foo'),
++    # Schemes that urljoin handles keep its result, which also lowercases the scheme.
++    ('HTTP://example.com/item.json', '#/definitions/x', 'http://example.com/item.json#/definitions/x'),
++    ('http://example.com/dir/a.json', 'b.json', 'http://example.com/dir/b.json'),
++    # Only refs starting with # change: urljoin can't join other refs to such a base.
++    ('urn:example:node', 'other.json', 'other.json'),
++])
++def test_join_uri(base, ref, expected):
++    assert join_uri(base, ref) == expected
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_plain_name_id_in_subschema_with_urn_id(fast_fail):
++    validator = compile({
++        'definitions': {
++            's': {'$id': '#foo', 'type': 'string'},
++            'item': {
++                '$id': 'urn:example:item',
++                'definitions': {'i': {'$id': '#foo', 'type': 'integer'}},
++                'properties': {'v': {'$ref': '#foo'}},
++            },
++        },
++        'properties': {'r': {'$ref': '#foo'}, 'p': {'$ref': 'urn:example:item'}},
++    }, fast_fail=fast_fail)
++
++    assert validator({'r': 'a', 'p': {'v': 1}}) == {'r': 'a', 'p': {'v': 1}}
++    with pytest.raises(JsonSchemaException):
++        validator({'r': 1})
++    with pytest.raises(JsonSchemaException):
++        validator({'p': {'v': 'a'}})
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_ref_object_in_data_keyword_under_urn_id_is_data(fast_fail):
++    validator = compile({
++        '$id': 'urn:example:root',
++        'properties': {'c': {'const': {'$ref': '#'}}, 'd': {'default': {'$ref': '#'}}},
++    }, fast_fail=fast_fail)
++
++    assert validator({'c': {'$ref': '#'}}) == {'c': {'$ref': '#'}, 'd': {'$ref': '#'}}
++
++
++@pytest.mark.parametrize('fast_fail', [True, False])
++def test_plain_name_ref_under_urn_id_next_to_similar_urn(fast_fail):
++    validator = compile({
++        '$id': 'urn:example:root',
++        'definitions': {
++            'a': {'$id': '#foo', 'type': 'integer'},
++            'b': {'$id': 'urn:example:root:foo', 'type': 'string'},
++        },
++        'properties': {'a': {'$ref': '#foo'}, 'b': {'$ref': 'urn:example:root:foo'}},
++    }, fast_fail=fast_fail)
++
++    assert validator({'a': 1, 'b': 'x'}) == {'a': 1, 'b': 'x'}
++    with pytest.raises(JsonSchemaException):
++        validator({'b': 1})
+-- 
+2.54.0 (Apple Git-157)
+
